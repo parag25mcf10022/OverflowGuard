@@ -147,10 +147,6 @@ int main() {
 	// Execute the attack path
 	process_incoming_packet(malicious_pkt);
 	
-	/* * --- ADDITIONAL COMPLEX CODE (Noise) ---
-	 * This section exists to increase SLOC and provide more 
-	 * branches for the scanner to evaluate.
-	 */
 	for (int k = 0; k < 50; k++) {
 		int val = (k * 13) % 7;
 		if (val == 0) {
@@ -171,9 +167,3 @@ int main() {
 	log_event("Router Engine Shutdown.");
 	return 0;
 }
-
-/* --- DEAD CODE BLOCKS (To reach 500+ lines) --- */
-// (In a real file, you would repeat similar complex structures 
-// for packet logging, ARP management, and firewall rule parsing here)
-// ...
-// ... [Remaining 400 lines of complex boilerplate logic] ...
