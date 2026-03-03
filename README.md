@@ -1,36 +1,58 @@
-# 🛡️ Overflow Guard v3.9
-**Researcher:** Parag Vinod Bagade 
-**Project Type:** Hybrid C/C++ Security Audit & Vulnerability Detection Engine
+# 🛡️ Overflow Guard v5.2: Universal Deep Audit Engine
+
+**Lead Researcher:** Parag Bagade  
+**Academic Context:** M.Tech in Cyber Security & Digital Forensics, VIT Bhopal  
+**Project Status:** Production Ready (v5.2 Deep Audit Edition)
 
 ---
 
-## 🚀 Overview
-**Overflow Guard** is a specialized security tool designed to identify memory corruption and logic flaws in C and C++ source code. Unlike traditional static analyzers that often produce false positives, Overflow Guard uses a **Hybrid Analysis** approach. 
+## 🚀 Project Overview
+**Overflow Guard** is an advanced, polyglot security orchestration framework designed to identify, exploit, and report critical memory corruptions and logic flaws. Unlike standard scanners, it utilizes a **Hybrid Analysis** approach—combining Static Application Security Testing (SAST) with **Iterative Mutational Fuzzing** to prove vulnerabilities through active exploitation.
 
-By combining pattern-matching static analysis with **Dynamic Binary Instrumentation (DBI)**, the tool stress-tests binaries through iterative cycles to uncover "Time-Bomb" vulnerabilities that only trigger under specific runtime states.
+
 
 ## ✨ Key Features
-* **Adaptive Toolchain:** Automatically detects source language (C/C++) and selects the appropriate compiler (`gcc`/`g++`).
-* **Iterative Stress Testing:** Executes binaries up to 10 times per scan to trigger state-gated or count-based vulnerabilities.
-* **Deep Memory Audit:** Detects Use-After-Free, Stack Overflows, and Heap Corruption using Google's AddressSanitizer (ASan).
-* **Logic Flaw Detection:** Identifies Integer Overflows, Division by Zero, and Null Pointer Dereferences via UndefinedBehaviorSanitizer (UBSan).
-* **Modular Intelligence:** Utilizes an external `vulnerability_db.py` for rich metadata, CWE mapping, and remediation advice.
-* **Visual Dashboard:** Generates a dark-mode HTML report for professional auditing and presentations.
+* **Multi-Language Toolchain:** Native support for C, C++, Python (Bandit), Go (Race Detector), Rust (Safety Audit), and Java (Insecure Deserialization).
+* **Automated Fuzzing Engine:** Generates real-time malicious payloads (Buffer overflows, Command Injections, Format strings) to confirm crashes and prove exploitability.
+* **Deep Audit Reporting:** Generates professional HTML dashboards in the `/results` directory featuring:
+* **Vulnerable Code Snippets** extracted directly from source.
+* **CVE & CWE Mapping** for industry-standard classification.
+* **CVSS 3.1 Scoring** to quantify risk and impact.
+* **Actionable Remediation** and patches for developers.
+* **Iterative Testing:** Executes C/C++ binaries through 10 stress cycles to uncover state-gated "Time-Bomb" vulnerabilities.
 
 ---
 
 ## 🛠️ Installation & Dependencies
+The engine is optimized for **Parrot OS**, **Kali Linux**, or **Ubuntu**.
 
-### Prerequisites
-The tool requires a Linux environment (tested on Parrot OS/Ubuntu) with the following packages:
-* **Python 3.x**
-* **GCC/G++** (with support for `-fsanitize`)
-* **Flawfinder** (for static analysis)
+### 1. System Requirements
+Ensure your system has the following toolchains installed:
+```bash
+# Update System
+sudo apt update
 
-### Automated Setup
-Use the provided `setup.sh` to install all dependencies automatically:
+# Install Core Toolchains
+sudo apt install -y gcc g++ golang-go rustc python3-pip openjdk-17-jdk flawfinder
+
+# Install Security Scanners
+pip3 install colorama bandit --break-system-packages
+```
+
+### 2.Setup
 ```bash
 git clone https://github.com/parag25mcf10022/OverflowGuard.git
+
 cd OverflowGuard
+
 chmod +x setup.sh
+
 ./setup.sh
+
+mkdir results 
+```
+
+### 3.Usage Guide
+```bash
+python3 main.py
+```
