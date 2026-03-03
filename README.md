@@ -1,5 +1,5 @@
 # 🛡️ Overflow Guard v3.9
-**Researcher:** Parag Vinod Bagade 
+**Researcher:** Parag Bagade 
 **Project Type:** Hybrid C/C++ Security Audit & Vulnerability Detection Engine
 
 ---
@@ -35,7 +35,7 @@ cd OverflowGuard
 chmod +x setup.sh
 ./setup.sh
 ```
-##**Run it :**
+**Run it :**
 ```bash
 python main.py
 ```
