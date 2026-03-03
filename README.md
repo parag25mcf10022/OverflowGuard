@@ -34,3 +34,8 @@ git clone https://github.com/parag25mcf10022/OverflowGuard.git
 cd OverflowGuard
 chmod +x setup.sh
 ./setup.sh
+```
+##**Run it :**
+```bash
+python main.py
+```
