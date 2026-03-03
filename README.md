@@ -1,7 +1,6 @@
 # 🛡️ Overflow Guard v5.2: Universal Deep Audit Engine
 
-**Lead Researcher:** Parag Bagade  
-**Academic Context:** M.Tech in Cyber Security & Digital Forensics, VIT Bhopal  
+**Lead Researcher:** Parag Bagade 
 **Project Status:** Production Ready (v5.2 Deep Audit Edition)
 
 ---
