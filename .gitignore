@@ -1,0 +1,5 @@
+# .gitignore
+temp_audit_bin
+audit_report.json
+venv/
+__pycache__/

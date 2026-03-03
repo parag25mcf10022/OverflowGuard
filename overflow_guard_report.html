@@ -1,0 +1,24 @@
+
+        <html>
+        <head>
+            <title>Audit Report - Parag Vinod Bagade</title>
+            <style>
+                body { font-family: sans-serif; background: #0c0c0c; color: #d0d0d0; padding: 40px; }
+                .stat-grid { display: flex; gap: 20px; margin: 20px 0; }
+                .stat-item { padding: 20px; border-radius: 8px; flex: 1; text-align: center; font-weight: bold; border-bottom: 5px solid; }
+                .CRITICAL { background: #2a0005; border-color: #ff1744; color: #ff1744; }
+                .HIGH { background: #2a1b00; border-color: #ff9100; color: #ff9100; }
+                .card { background: #181818; padding: 20px; margin-bottom: 15px; border-radius: 10px; border-left: 10px solid; }
+                .vulnerable { border-color: #cf6679; }
+                .secure { border-color: #03dac6; }
+            </style>
+        </head>
+        <body>
+            <h1>🛡️ Overflow Guard Audit Report</h1>
+            <p>Researcher: <b>Parag Vinod Bagade</b> | Date: 2026-03-02 21:24:53</p>
+            <div class="stat-grid">
+                <div class="stat-item CRITICAL">CRITICAL<br>3</div>
+                <div class="stat-item HIGH">HIGH<br>3</div>
+                <div class="stat-item secure">SECURE<br>8</div>
+            </div>
+        <div class="card vulnerable"><h3>File: sample2.c</h3><p><b style='color:#ff1744;'>[MEDIUM]</b> INTEGER-OVERFLOW (CWE: CWE-190)<br><i>Fix: Use safe math libraries or check for overflow (e.g., if (a > INT_MAX - b)) before addition.</i></p></div><div class="card vulnerable"><h3>File: use_after.c</h3><p><b style='color:#ff1744;'>[HIGH]</b> USE-AFTER-FREE (CWE: CWE-416)<br><i>Fix: Assign pointers to NULL immediately after calling 'free()'.</i></p></div><div class="card vulnerable"><h3>File: heap_overflow.c</h3><p><b style='color:#ff1744;'>[HIGH]</b> HEAP-BUFFER-OVERFLOW (CWE: CWE-122)<br><i>Fix: Use 'std::vector' or strictly check 'malloc' sizes before writing.</i></p></div><div class="card vulnerable"><h3>File: test2.cpp</h3><p><b style='color:#ff1744;'>[CRITICAL]</b> STRCPY (CWE: CWE-120)<br><i>Fix: Use 'strncpy' or 'strlcpy' and manually null-terminate the destination buffer.</i></p></div><div class="card vulnerable"><h3>File: sample.c</h3><p><b style='color:#ff1744;'>[CRITICAL]</b> STRCPY (CWE: CWE-120)<br><i>Fix: Use 'strncpy' or 'strlcpy' and manually null-terminate the destination buffer.</i></p></div><div class="card vulnerable"><h3>File: test.cpp</h3><p><b style='color:#ff1744;'>[HIGH]</b> HEAP-BUFFER-OVERFLOW (CWE: CWE-122)<br><i>Fix: Use 'std::vector' or strictly check 'malloc' sizes before writing.</i></p></div><div class="card vulnerable"><h3>File: stack_overflow.c</h3><p><b style='color:#ff1744;'>[CRITICAL]</b> STRCPY (CWE: CWE-120)<br><i>Fix: Use 'strncpy' or 'strlcpy' and manually null-terminate the destination buffer.</i></p></div><div class="card vulnerable"><h3>File: logic-flaw.c</h3><p><b style='color:#ff1744;'>[MEDIUM]</b> INTEGER-OVERFLOW (CWE: CWE-190)<br><i>Fix: Use safe math libraries or check for overflow (e.g., if (a > INT_MAX - b)) before addition.</i></p></div></body></html>
