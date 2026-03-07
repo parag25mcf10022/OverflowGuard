@@ -154,6 +154,65 @@ C_SINK_RULES = [
      "negative-index",
      "MEDIUM",
      "Signed integer used as array index — negative value causes OOB read/write"),
+
+    # Off-by-one: <= used as loop bound against a count/size/max variable
+    (re.compile(
+        r"for\s*\([^;]*;\s*[a-zA-Z_]\w*\s*<="
+        r"\s*(?:[a-zA-Z_]\w*->|[a-zA-Z_]\w*\.)?[a-zA-Z_]\w*"
+        r"(?:_count|_cnt|_size|_num|_max|_len|_regions|_handlers|_ports)\s*;",
+    ),
+     "off-by-one",
+     "HIGH",
+     "Loop uses '<= count_field' — final iteration accesses index[count_field] "
+     "which is one past the last valid element (off-by-one / OOB)"),
+
+    # Off-by-one: <= used against a plain compile-time constant in array loops
+    (re.compile(
+        r"for\s*\([^;]*;\s*[a-zA-Z_]\w*\s*<=\s*[A-Z_][A-Z0-9_]+\s*;"
+    ),
+     "off-by-one",
+     "MEDIUM",
+     "Loop uses '<= CONSTANT' — check whether CONSTANT is the last valid index "
+     "or the array size (off-by-one if array size == CONSTANT)"),
+
+    # Narrow-type cast of size expression — silent truncation
+    (re.compile(
+        r"static_cast\s*<\s*(?:uint16_t|uint8_t|short|unsigned short)\s*>"
+        r"\s*\([^)]*(?:sizeof|size|len|count|num|\*)[^)]*\)"
+    ),
+     "integer-truncation",
+     "HIGH",
+     "Explicit cast of size expression to uint16_t/uint8_t — silently truncates "
+     "values > 65535, turning a large allocation or length into a tiny one"),
+
+    # Allocation immediately followed by unchecked copy into it
+    (re.compile(
+        r"\b(?:std::)?malloc\s*\([^)]+\)[^;]*;\s*\n"
+        r"(?:[^\n]*\n){0,5}[^\n]*memcpy\s*\("
+    ),
+     "heap-buffer-overflow",
+     "MEDIUM",
+     "malloc() result used in memcpy within a few lines — verify the copy "
+     "length cannot exceed the allocated size"),
+
+    # Ring-buffer: index variable used directly as array subscript (no modulo)
+    (re.compile(
+        r"\b(?:irq_(?:head|tail)|head_idx|tail_idx|buf_head|buf_tail|wr_ptr|rd_ptr)\s*\]"
+    ),
+     "ring-buffer-overflow",
+     "HIGH",
+     "Ring-buffer head/tail index used as direct array subscript without modulo "
+     "guard — if the index exceeds the buffer capacity this is an OOB write"),
+
+    # Struct field used as for-loop bound without MAX guard (generic form)
+    (re.compile(
+        r"for\s*\([^;]*;\s*[a-zA-Z_]\w*\s*<\s*"
+        r"[a-zA-Z_]\w*->(?:io|mmio|port|handler|slot)[_a-z]*count\s*;"
+    ),
+     "uncapped-loop-bound",
+     "MEDIUM",
+     "for-loop bounded by obj->*_count struct field without a MAX capacity guard — "
+     "a corrupted or over-incremented field drives the loop past the array end"),
 ]
 
 # Sanitizer patterns for C (reduce false positives)

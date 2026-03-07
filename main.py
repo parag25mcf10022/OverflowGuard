@@ -11,6 +11,7 @@ import html as html_module
 from ast_analyzer import ASTAnalyzer, CLANG_AVAILABLE
 from static_tools  import run_all as run_static_tools, is_available
 from taint_analyzer import TaintAnalyzer
+from deep_analyzer import DeepAnalyzer
 
 
 init(autoreset=True)
@@ -505,6 +506,17 @@ def audit_cpp(file_path, audit_obj):
                               snippet_override=tf.snippet,
                               note_override=tf.note,
                               confidence_override=tf.confidence)
+
+    # --- Stage 1c: Deep multi-pass inter-procedural analysis ---
+    deep_findings = DeepAnalyzer().analyze(file_path)
+    for df in deep_findings:
+        print(f"{Fore.RED}[!!!] Deep [{df.confidence}] {df.issue_type} "
+              f"@ line {df.line} — {df.note[:120]}")
+        audit_obj.add_finding(file_path, "Deep", df.issue_type,
+                              line_override=df.line,
+                              snippet_override=df.snippet,
+                              note_override=df.note,
+                              confidence_override=df.confidence)
 
     # --- Stage 2: cppcheck + clang-tidy ---
     tool_findings = run_static_tools(file_path)
