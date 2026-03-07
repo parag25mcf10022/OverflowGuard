@@ -25,8 +25,14 @@ from ml_filter import MLFilter
 from llvm_analyzer import LLVMAnalyzer
 from concolic_fuzzer import ConcolicFuzzer
 
+# ── v8.0 SCA / SARIF / Secrets / SBOM modules ───────────────────────────────
+from sca_scanner import run_sca
+from sarif_output import generate_sarif
+from secrets_scanner import run_secrets_scan
+from sbom_generator import generate_sbom
+
 # Shared singletons (created once per process)
-_CACHE    = CacheManager(version="7.1")
+_CACHE    = CacheManager(version="8.0")
 _ML       = MLFilter()
 _CALL_DB  = CallSummaryDB()
 
@@ -42,7 +48,7 @@ except ImportError:
 # --- CONFIGURATION ---
 RESEARCHER_NAME = "Parag Bagade"
 GITHUB_REPO_URL = "https://github.com/parag25mcf10022/OverflowGuard"
-VERSION = "v7.1"
+VERSION = "v8.0"
 
 class AuditManager:
     def __init__(self, target_input):
@@ -855,4 +861,133 @@ if __name__ == "__main__":
                     analyze_file(os.path.join(root, f), audit)
     elif os.path.isfile(path_input):
         analyze_file(path_input, audit)
+
+    # ── Stage 3: SCA — dependency vulnerability / license scanning ────────────
+    print(f"\n{Fore.CYAN}━━━  Stage 3: Software Composition Analysis (SCA)  ━━━{Style.RESET_ALL}")
+    sca_root = path_input if os.path.isdir(path_input) else os.path.dirname(path_input)
+    sca_findings, license_findings, snippet_matches = run_sca(sca_root, verbose=True)
+
+    # Inject SCA CVE findings into the audit report (keyed by manifest file)
+    for sf in sca_findings:
+        mf = sf.dep.source_file or sca_root
+        if mf not in audit.report_data:
+            audit.report_data[mf] = []
+        audit.report_data[mf].append({
+            "stage":       "SCA",
+            "issue":       "vulnerable-dependency",
+            "type":        "vulnerable-dependency",
+            "severity":    sf.severity,
+            "cwe":         "CWE-1395",
+            "cve":         sf.cve_id,
+            "cvss":        sf.cvss,
+            "description": f"{sf.dep.name} {sf.dep.version} — {sf.summary}",
+            "remediation": (
+                f"Upgrade to {sf.dep.name} {sf.fixed_version} or later."
+                if sf.fixed_version else "Update to the latest patched version."
+            ),
+            "line":        1,
+            "snippet":     f"{sf.dep.name}=={sf.dep.version}",
+            "confidence":  "High" if sf.cvss >= 7.0 else "Medium",
+            "note":        (
+                f"Fix available: {sf.fixed_version}" if sf.fixed_version else ""
+            ),
+        })
+        audit.stats[sf.severity] = audit.stats.get(sf.severity, 0) + 1
+
+    # Inject license compliance findings
+    for lf in license_findings:
+        mf = lf.dep.source_file or sca_root
+        if mf not in audit.report_data:
+            audit.report_data[mf] = []
+        sev = "HIGH" if lf.risk_level == "HIGH" else "MEDIUM"
+        audit.report_data[mf].append({
+            "stage":       "SCA-License",
+            "issue":       "license-compliance",
+            "type":        "license-compliance",
+            "severity":    sev,
+            "cwe":         "N/A",
+            "cve":         "N/A",
+            "cvss":        "N/A",
+            "description": f"{lf.dep.name}: {lf.license_name} — {lf.reason}",
+            "remediation": (
+                "Replace this dependency with a permissively-licensed alternative "
+                "(MIT, Apache-2.0, BSD) or obtain a commercial licence."
+            ),
+            "line":        1,
+            "snippet":     f"{lf.dep.name}=={lf.dep.version}",
+            "confidence":  "High",
+            "note":        f"License risk level: {lf.risk_level}",
+        })
+        audit.stats[sev] = audit.stats.get(sev, 0) + 1
+
+    # ── Stage 4: Secrets / credentials scanning ───────────────────────────────
+    print(f"\n{Fore.CYAN}━━━  Stage 4: Secrets & Credentials Scanner  ━━━{Style.RESET_ALL}")
+    secrets_findings = run_secrets_scan(sca_root, verbose=True)
+    for sec in secrets_findings:
+        fp = sec.file_path
+        if fp not in audit.report_data:
+            audit.report_data[fp] = []
+        sev = "HIGH"
+        audit.report_data[fp].append({
+            "stage":       "Secrets",
+            "issue":       "secret-in-code",
+            "type":        "secret-in-code",
+            "severity":    sev,
+            "cwe":         "CWE-312",
+            "cve":         "N/A",
+            "cvss":        "N/A",
+            "description": (
+                f"{sec.secret_type} detected. "
+                f"Entropy: {sec.entropy:.2f}. "
+                "Hard-coded credentials can be extracted from source and abused."
+            ),
+            "remediation": (
+                "Remove the credential from source code immediately. "
+                "Rotate it via the service provider. "
+                "Store secrets in environment variables or a secrets manager "
+                "(HashiCorp Vault, AWS Secrets Manager, GitHub Encrypted Secrets)."
+            ),
+            "line":        sec.line,
+            "snippet":     sec.redacted,
+            "confidence":  "High" if sec.entropy > 4.5 else "Medium",
+            "note":        f"{sec.secret_type} (entropy={sec.entropy:.2f})",
+        })
+        audit.stats[sev] = audit.stats.get(sev, 0) + 1
+
+    # ── Generate HTML report (includes SCA + secrets findings) ────────────────
     audit.save_final_summary()
+
+    # ── Stage 5: SBOM generation (CycloneDX 1.4) ─────────────────────────────
+    print(f"\n{Fore.CYAN}━━━  Stage 5: SBOM Generation (CycloneDX 1.4)  ━━━{Style.RESET_ALL}")
+    all_deps = [sf.dep for sf in sca_findings]
+    proj_name = os.path.basename(sca_root.rstrip(os.sep)) or "project"
+    sbom_path = generate_sbom(
+        deps=all_deps,
+        sca_findings=sca_findings,
+        license_findings=license_findings,
+        project_name=proj_name,
+        out_dir=audit.results_dir,
+    )
+    print(f"{Fore.GREEN}[✔] SBOM (CycloneDX 1.4): {Fore.WHITE}{sbom_path}")
+
+    # ── Stage 6: SARIF output ─────────────────────────────────────────────────
+    print(f"\n{Fore.CYAN}━━━  Stage 6: SARIF 2.1.0 Export  ━━━{Style.RESET_ALL}")
+    try:
+        sarif_path = generate_sarif(
+            audit_manager=audit,
+            sca_findings=sca_findings,
+            secrets_findings=secrets_findings,
+            out_dir=audit.results_dir,
+            vuln_intel=VULN_INTEL,
+        )
+        print(f"{Fore.GREEN}[✔] SARIF report:         {Fore.WHITE}{sarif_path}")
+    except Exception as _sarif_err:
+        print(f"{Fore.YELLOW}[!] SARIF generation failed: {_sarif_err}")
+
+    # ── Final v8.0 summary banner ─────────────────────────────────────────────
+    print(f"\n{Fore.CYAN}━━━  v8.0 Summary  ━━━{Style.RESET_ALL}")
+    print(f"  SCA findings         : {len(sca_findings)} CVEs in dependencies")
+    print(f"  License issues       : {len(license_findings)}")
+    print(f"  Snippet matches      : {len(snippet_matches)}")
+    print(f"  Secrets detected     : {len(secrets_findings)}")
+    print(f"  SBOM components      : {len(all_deps)} dependencies documented")

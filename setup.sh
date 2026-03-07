@@ -1,8 +1,8 @@
 #!/bin/bash
-# setup.sh — One-shot environment bootstrap for OverflowGuard v7.1
+# setup.sh — One-shot environment bootstrap for OverflowGuard v8.0
 set -e
 
-echo "🛡️  Configuring OverflowGuard v7.1 Environment..."
+echo "🛡️  Configuring OverflowGuard v8.0 Environment..."
 echo ""
 
 # ── System dependencies ───────────────────────────────────────────────────────

@@ -1,8 +1,8 @@
-# 🛡️ OverflowGuard v7.1
+# 🛡️ OverflowGuard v8.0
 
 **Lead Researcher:** Parag Bagade  
 **GitHub:** [parag25mcf10022/OverflowGuard](https://github.com/parag25mcf10022/OverflowGuard)  
-**Status:** Production Ready — v7.1 (Dataflow + Interprocedural Taint + Symbolic + ML Filter + Concolic + LLVM + Build-Integration Edition)
+**Status:** Production Ready — v8.0 (SAST + SCA + Secrets + SBOM + SARIF — Full Supply-Chain Security Edition)
 
 ![CI](https://github.com/parag25mcf10022/OverflowGuard/actions/workflows/ci.yml/badge.svg)
 
@@ -12,98 +12,56 @@
 
 **OverflowGuard** is a polyglot security orchestration framework that detects, classifies, and reports memory-corruption and logic vulnerabilities across **C, C++, Python, Go, Rust, and Java** source code.
 
-Unlike surface-level scanners, it combines **ten independent analysis layers** to minimise false positives and maximise detection confidence:
+Unlike surface-level scanners, it combines **twelve independent analysis stages** to minimise false positives and maximise detection confidence across both first-party code *and* the software supply chain:
 
-| Layer | Technology | Languages |
+| Stage | Technology | What it covers |
 |---|---|---|
-| 1a — Taint / Dataflow Analysis | `taint_analyzer.py` (zero-dependency) | C/C++, Python, Java, Go, Rust |
-| 1b — AST Sink/Source Tracking | libclang (Python) + regex fallback | C, C++ |
-| 1c — Deep Pattern Analysis | `deep_analyzer.py` | C/C++ |
-| 1d — SSA-style Dataflow | `dataflow.py` (def-use chains) | C/C++, Python |
-| 1e — Call Graph Summaries | `call_summary.py` | C/C++, Python |
-| 1f — Symbolic Range Checks | `symbolic_check.py` (Z3 / fallback) | C/C++, Python |
-| 1g — Interprocedural Taint | `interprocedural_taint.py` | C/C++, Python |
-| 1h — Concurrency Races | `concurrency_analyzer.py` | C/C++, Go |
-| 2a — External SAST | cppcheck + clang-tidy + semgrep + Infer + LLVM (`llvm_analyzer.py`) | C/C++, Python, Java |
-| 2b — Concolic Fuzzing | `concolic_fuzzer.py` (angr + AFL++ + ASAN) | C/C++ |
+| 1a — Taint / Dataflow | `taint_analyzer.py` (zero-dependency) | C/C++, Python, Java, Go, Rust |
+| 1b — AST Sink/Source | libclang + regex fallback | C, C++ |
+| 1c — Deep Patterns | `deep_analyzer.py` | C/C++ |
+| 1d — SSA Dataflow | `dataflow.py` def-use chains | C/C++, Python |
+| 1e — Call Summaries | `call_summary.py` | C/C++, Python |
+| 1f — Symbolic Ranges | `symbolic_check.py` (Z3 / fallback) | C/C++, Python |
+| 1g — Interprocedural | `interprocedural_taint.py` | C/C++, Python |
+| 1h — Concurrency | `concurrency_analyzer.py` | C/C++, Go |
+| 2a — External SAST | cppcheck + clang-tidy + semgrep + Infer + LLVM | C/C++, Python, Java |
+| 2b — Concolic Fuzzing | `concolic_fuzzer.py` (angr → AFL++ → ASAN) | C/C++ |
+| **3 — SCA** | **`sca_scanner.py` (OSV API)** | **All manifest formats** |
+| **4 — Secrets Scan** | **`secrets_scanner.py` (30+ patterns + entropy)** | **All source + config files** |
 
-All findings are deduplicated, tagged with **HIGH / MEDIUM / LOW confidence**, mapped to real CVEs / CWEs / CVSS v3.1 scores, and rendered in a professional HTML dashboard.
+Output formats: **HTML dashboard**, **SARIF 2.1.0** (GitHub Code Scanning / Azure DevOps), **CycloneDX 1.4 SBOM**.
 
 ---
 
 ## ✨ Features
 
+- **SCA — dependency vulnerability scanning** (`sca_scanner.py`) — parses `requirements.txt`, `pyproject.toml`, `Pipfile`, `package.json`, `Cargo.toml`, `go.mod`, `pom.xml`, `build.gradle`; queries the [OSV API](https://osv.dev) (free, no key) for known CVEs; includes fix-version in every finding; auto-remediation messages show the exact safe upgrade path (e.g. *“Upgrade requests 2.27.0 → 2.31.0 to fix CVE-2023-32681”*)
+- **License compliance** — detects GPL / LGPL / AGPL / SSPL / EUPL / MPL / CDDL licences in dependencies that could “infect” proprietary code; rated HIGH (GPL/AGPL/SSPL), MEDIUM (LGPL/MPL); remediation guidance included
+- **OSS snippet matching** — SHA-256 fingerprints every source file and looks up known open-source code signatures so copyleft code can be detected even without a package manifest
+- **Secrets / credentials scanner** (`secrets_scanner.py`) — 30+ regex patterns covering AWS access keys, GitHub tokens (ghp\_/gho\_/ghu\_/ghs\_), Google API keys, Slack tokens + webhooks, Stripe live/test keys, Twilio SIDs, SendGrid/NPM/PyPI API tokens, PEM private keys (RSA/EC/OpenSSH/PGP), JWT tokens, database connection strings, hardcoded password assignments, Azure storage keys, and Basic-Auth-in-URL; backs each pattern hit with Shannon entropy analysis; suppresses test fixtures and placeholder values
+- **SBOM generation** (`sbom_generator.py`) — produces a **CycloneDX 1.4 JSON** Software Bill of Materials listing every detected dependency with PURL, version, licence, known CVEs, and recommended fix versions; satisfies the NTIA minimum SBOM requirements and US EO 14028 federal supply-chain mandates
+- **SARIF 2.1.0 export** (`sarif_output.py`) — converts all findings (SAST + SCA + secrets) to the industry-standard SARIF format accepted natively by GitHub Code Scanning (free annotation on PR diffs), Azure DevOps, VS Code Problems panel, and every major SIEM/ASPM platform; no competitor integration needed
 - **Multi-language taint analysis** (`taint_analyzer.py`) — zero external dependency dataflow engine with 60+ rules across C/C++ (double-free, off-by-one, integer overflow in alloc sizes, NULL-unchecked malloc, path traversal, weak-RNG), Python (SQL injection, SSRF, template injection, JWT none-alg, XSS, insecure deserialisation), Java (LDAP injection, SpEL injection, open redirect, XXE), Go (insecure TLS, race condition, resource leak), and Rust (unsafe block, `mem::transmute`, panic-unwrap)
 - **AST-based sink/source tracking** — libclang walks the parse tree to find dangerous calls (`strcpy`, `gets`, `sprintf`, `strncat`, `tmpnam`, `system`, `popen`), heap vs. stack classification, double-free detection, and off-by-one loop analysis
 - **SSA-style def-use dataflow** (`dataflow.py`) — builds definition-use chains, propagates taint through assignments and function returns, catches second-order flows missed by single-pass taint
-- **Interprocedural taint** (`interprocedural_taint.py`) — follows taint across function boundaries using call-graph summaries built by `call_summary.py`; catches multi-hop injection paths
+- **Interprocedural taint** (`interprocedural_taint.py`) — follows taint across function boundaries using call-graph summaries; catches multi-hop injection paths
 - **Symbolic range checking** (`symbolic_check.py`) — uses Z3 SMT solver (optional; falls back to interval arithmetic) to prove or refute off-by-one and integer-overflow conditions
 - **Concurrency analysis** (`concurrency_analyzer.py`) — detects data races, lock-order inversions, and missing mutex guards in C/C++ and Go
-- **LLVM IR analysis** (`llvm_analyzer.py`) — compiles to LLVM IR (`clang -emit-llvm`) and inspects IR for unsafe intrinsics, unreachable code patterns, and integer wrap in arithmetic
-- **Concolic fuzzer** (`concolic_fuzzer.py`) — three-tier approach: angr symbolic execution → AFL++ mutation → ASAN-instrumented brute-force; `classify_crash()` maps signals and ASAN reports to specific CWEs
-- **ML false-positive filter** (`ml_filter.py`) — optional RandomForest classifier (scikit-learn) trained on historical findings; silently falls back to heuristic scoring when sklearn is absent; model files are only auto-loaded from `~/.overflowguard` (safe path)
-- **Persistent scan cache** (`cache_manager.py`) — SHA-256 content-addressed SQLite cache skips unchanged files, cutting re-scan time by up to 90% on large codebases
-- **Build-system integration** (`build_integration.py`) — auto-detects Makefile / CMake / Cargo / Gradle and runs the project's own build with ASAN/UBSan flags injected; uses `bear` to capture compilation database for clang-tidy
-- **cppcheck + clang-tidy integration** — 40+ mapped rule IDs covering buffer overflows, UAF, integer issues, insecure APIs, and cert checks
-- **Semgrep wrapper** — `run_semgrep()` runs `semgrep --config auto`, maps 26 rule IDs to vulnerability types
-- **Facebook Infer wrapper** — `run_infer()` runs Infer on C/Java files, maps 17 bug types including null-dereference and memory leaks
-- **Bandit SAST** — 30+ per-test-ID mappings for Python (OS injection, eval, hardcoded secrets, insecure TLS, weak crypto, YAML load, SQL injection)
-- **10-category smart fuzzer** (`fuzzer.py`) — buffer overflow, format string, command injection, integer extremes, path traversal, SQL injection, XSS, null/binary, JSON/XML (XXE, prototype pollution), newline flood
-- **Smart directory scanning** — `os.walk` prunes `.venv/`, `__pycache__/`, `site-packages/`, `node_modules/`, `.git/`, and build artefact directories so third-party code is never falsely reported
-- **Global deduplication** — `(file, issue_type, line)` keyed set prevents the same bug appearing twice regardless of which layer found it
-- **42+ entry vulnerability DB** — every entry has a real CVE, accurate CVSS v3.1 base score, correct CWE, detailed description, and remediation guidance
-- **Confidence badges** — each finding is tagged HIGH (green) / MEDIUM (amber) / LOW (grey) based on detection certainty
-- **Rich terminal scorecard** — per-file table with CRITICAL/HIGH/MED/LOW columns + colour-coded status badges, ending with a total summary banner
-- **HTML report** — dark-themed dashboard with severity breakdown, detection-stage bar chart, file summary, and per-finding cards showing severity + confidence badge + CWE/CVE/CVSS + remediation
-- **GitHub Actions CI** — 4-job pipeline: pytest, cppcheck, Bandit SAST, full scan with HTML artifact upload
-- **Unit test suite** — 24 pytest tests covering AST accuracy, pipeline correctness, deduplication, cppcheck, clang-tidy, edge cases, and robustness
+- **LLVM IR analysis** (`llvm_analyzer.py`) — compiles to LLVM IR and inspects for unsafe intrinsics and integer wrap
+- **Concolic fuzzer** (`concolic_fuzzer.py`) — angr symbolic execution → AFL++ mutation → ASAN-instrumented brute-force
+- **ML false-positive filter** (`ml_filter.py`) — optional RandomForest classifier; model files only auto-loaded from `~/.overflowguard`
+- **Persistent scan cache** (`cache_manager.py`) — SHA-256 content-addressed SQLite cache; skips unchanged files
+- **Build-system integration** (`build_integration.py`) — auto-detects Makefile / CMake / Cargo / Gradle; injects ASAN/UBSan flags
+- **Smart directory scanning** — prunes `.venv/`, `__pycache__/`, `site-packages/`, `node_modules/`, `.git/`, build artefact directories
+- **42+ entry vulnerability DB** — every entry has a real CVE, CVSS v3.1 score, CWE, description, and remediation
+- **Confidence badges** — HIGH (green) / MEDIUM (amber) / LOW (grey) per finding
+- **HTML report** — dark-themed dashboard with severity breakdown, detection-stage chart, file summary, and per-finding cards
+- **GitHub Actions CI** — 4-job pipeline: pytest, cppcheck, Bandit SAST, full scan + HTML artifact upload
+- **Unit test suite** — 24 pytest tests
 
 ---
 
-## 🗂️ Project Structure
 
-```
-OverflowGuard/
-├── main.py                      # Entry point, audit pipeline, HTML report, scorecard (v7.1)
-├── taint_analyzer.py            # Multi-language taint/dataflow engine
-├── ast_analyzer.py              # libclang AST walker + regex fallback
-├── static_tools.py              # cppcheck, clang-tidy, semgrep & Infer integration
-├── deep_analyzer.py             # Deep pattern + heuristic analysis
-├── fuzzer.py                    # Standalone universal input fuzzer (10 payload categories)
-├── vulnerability_db.py          # 42+ entry CVE/CWE/CVSS intelligence database
-│
-├── # ── v7.0 advanced analysis modules ────────────────────────────────
-├── dataflow.py                  # SSA-style def-use chain dataflow analysis
-├── call_summary.py              # Call graph builder + per-function taint summaries
-├── symbolic_check.py            # Symbolic range / bounds checking (Z3 + fallback)
-├── interprocedural_taint.py     # Cross-function taint propagation
-├── build_integration.py         # Build-system detection + ASAN/UBSan injection
-├── cache_manager.py             # SHA-256 content-addressed SQLite scan cache
-├── concurrency_analyzer.py      # Data-race and lock-order inversion detection
-├── ml_filter.py                 # Optional RandomForest ML false-positive filter
-├── llvm_analyzer.py             # LLVM IR emission and analysis
-├── concolic_fuzzer.py           # Concolic fuzzer (angr → AFL++ → ASAN)
-│
-├── setup.sh                     # One-shot environment bootstrap
-├── requirements.txt             # Python dependencies
-├── .env.example                 # Environment variable template
-├── .github/
-│   └── workflows/
-│       └── ci.yml               # GitHub Actions CI (4 jobs)
-├── tests/
-│   └── test_audit.py            # 24-test pytest suite
-├── samples/                     # Intentionally vulnerable sample files
-│   ├── stack_overflow.c
-│   ├── heap_overflow.c
-│   ├── use_after.c
-│   ├── sample.c / sample2.c / saft.c / logic-flaw.c
-│   ├── test.cpp / test2.cpp / logic.cpp
-│   ├── engine.rs / key.rs
-│   ├── loader.java
-│   ├── race.go
-│   └── vault.py
-└── results/                     # Generated HTML reports (git-ignored)
-```
 
 ---
 
@@ -281,10 +239,12 @@ click==8.1.7
 flawfinder==2.0.19
 
 # Optional — advanced analysis (gracefully skipped when absent)
-z3-solver>=4.12.0        # symbolic_check.py: SMT-based range / overflow proofs
-scikit-learn>=1.3.0      # ml_filter.py: ML false-positive filter
-angr>=9.2                # concolic_fuzzer.py: symbolic execution (heavy ~1 GB)
+z3-solver>=4.12.0        # symbolic_check.py
+scikit-learn>=1.3.0      # ml_filter.py
+angr>=9.2                # concolic_fuzzer.py  (~1 GB)
 ```
+
+The SCA, secrets, SBOM, and SARIF modules use only the Python standard library (`urllib`, `hashlib`, `json`, `re`) — **no extra pip packages required** for the new v8.0 features.
 
 ### System tools
 
@@ -293,15 +253,14 @@ angr>=9.2                # concolic_fuzzer.py: symbolic execution (heavy ~1 GB)
 | `gcc` / `g++` | Compile with ASAN/UBSan | `apt install gcc g++` |
 | `cppcheck` | Static analysis (XML) | `apt install cppcheck` |
 | `clang-tidy` | Clang static analyser | `apt install clang-tidy` |
-| `clang` / `llvm` | LLVM IR emission (`llvm_analyzer.py`) | `apt install clang llvm` |
-| `afl++` | Mutation fuzzing tier (`concolic_fuzzer.py`) | `apt install afl++` |
-| `bear` | Compilation DB for clang-tidy (`build_integration.py`) | `apt install bear` |
+| `clang` / `llvm` | LLVM IR emission | `apt install clang llvm` |
+| `afl++` | Mutation fuzzing tier | `apt install afl++` |
+| `bear` | Compilation DB for clang-tidy | `apt install bear` |
 | `semgrep` | Multi-language SAST patterns | `pip install semgrep` |
 | `infer` | Facebook deep C/Java analysis | [fbinfer.com](https://fbinfer.com) |
 | `go` | Go race detector | `apt install golang-go` |
 | `rustc` | Rust keyword/taint scan | `apt install rustc` |
 | `java` | Java static pattern checks | `apt install openjdk-17-jdk` |
-| `bandit` | Python SAST | `pip install bandit` |
 
 ---
 
@@ -328,22 +287,19 @@ The repository ships with a **GitHub Actions** workflow (`.github/workflows/ci.y
 
 > **Note:** When scanning a directory, OverflowGuard automatically skips `.venv/`, `__pycache__/`, `site-packages/`, `node_modules/`, `.git/`, and build artefact folders, so you will never see false positives from third-party packages.
 
+## 🗓️ Changelog
 
+| Version | Date | Highlights |
+|---|---|---|
+| **v8.0** | 2026-03-07 | `sca_scanner.py` (OSV API, 7 manifest formats, license compliance, snippet matching); `secrets_scanner.py` (30+ patterns + Shannon entropy); `sbom_generator.py` (CycloneDX 1.4 JSON); `sarif_output.py` (SARIF 2.1.0 — GitHub Code Scanning native); 6-stage pipeline; zero new pip dependencies |
+| **v7.1** | 2026-03-07 | Smart directory scanning (skip `.venv/`, `site-packages/`); SQL f-string fix; safer pickle loading |
+| **v7.0** | 2026-03 | 10 new advanced-analysis modules; 8-stage pipeline; persistent scan cache; ML false-positive filter |
+| **v6.0** | 2026-02 | Multi-language taint (Go, Rust, Java), semgrep, Infer, GitHub Actions CI, HTML dashboard |
+| **v5.0** | 2026-01 | Python SAST (Bandit), deep pattern analyser, CVE/CWE/CVSS v3.1 vulnerability DB |
 
+---
 
-
-
-
-
-
-
-
-
-
-
-
-
-## �📄 License
+## 📄 License
 
 MIT License — see [LICENSE](LICENSE) for details.
 
@@ -354,3 +310,4 @@ MIT License — see [LICENSE](LICENSE) for details.
 This tool is intended for **authorized security research and educational purposes only**.  
 The sample files in `samples/` are intentionally vulnerable — do not deploy them.  
 The authors are not responsible for any misuse of this software.
+
