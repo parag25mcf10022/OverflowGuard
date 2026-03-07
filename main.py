@@ -832,8 +832,24 @@ if __name__ == "__main__":
     if not os.path.exists(path_input):
         print(f"{Fore.RED}[x] Path does not exist!"); sys.exit(1)
     audit = AuditManager(path_input)
+
+    # Directories that must never be scanned: virtual-env, caches, VCS, build artefacts
+    SKIP_DIRS: set = {
+        ".venv", "venv", "env", ".env", "virtualenv",
+        "__pycache__", ".git", ".hg", ".svn",
+        "node_modules", "dist", "build", "target",
+        ".tox", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+        "site-packages", "dist-packages",
+    }
+
     if os.path.isdir(path_input):
-        for root, _, files in os.walk(path_input):
+        for root, dirs, files in os.walk(path_input):
+            # Prune dirs in-place so os.walk does not descend into them
+            dirs[:] = [
+                d for d in dirs
+                if d not in SKIP_DIRS
+                and not d.endswith((".egg-info", ".dist-info"))
+            ]
             for f in files:
                 if f.endswith((".c", ".cpp", ".cc", ".py", ".go", ".rs", ".java")):
                     analyze_file(os.path.join(root, f), audit)

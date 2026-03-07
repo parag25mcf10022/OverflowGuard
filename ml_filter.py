@@ -177,13 +177,20 @@ class MLFilter:
         self._using_ml   = False
 
         if _HAS_SKLEARN and os.path.isfile(self._model_path):
-            try:
-                with open(self._model_path, "rb") as fh:
-                    self._clf = pickle.load(fh)
-                self._using_ml = True
-            except (pickle.UnpicklingError, Exception):
-                self._clf      = None
-                self._using_ml = False
+            # Safety: only auto-load from the well-known OverflowGuard model dir.
+            # Never load a pickle from an arbitrary / user-supplied path without
+            # explicit confirmation — pickle.load() executes arbitrary code.
+            _safe_prefix = os.path.join(os.path.expanduser("~"), ".overflowguard")
+            if not os.path.abspath(self._model_path).startswith(_safe_prefix):
+                pass  # refuse to auto-load from unexpected location
+            else:
+                try:
+                    with open(self._model_path, "rb") as fh:
+                        self._clf = pickle.load(fh)  # nosec B301 — trusted path only
+                    self._using_ml = True
+                except Exception:
+                    self._clf      = None
+                    self._using_ml = False
 
     # ── Inference ─────────────────────────────────────────────────────────────
     def score(self, finding: Any) -> float:
@@ -266,9 +273,13 @@ class MLFilter:
         return target
 
     def load_model(self, path: str) -> "MLFilter":
-        """Load a previously saved model from *path*."""
+        """Load a previously saved model from *path*.
+
+        WARNING: only call this with a model file you generated and trust.
+        pickle.load() can execute arbitrary code if the file is tampered with.
+        """
         with open(path, "rb") as fh:
-            self._clf = pickle.load(fh)
+            self._clf = pickle.load(fh)  # nosec B301 — caller is responsible for path trust
         self._using_ml = _HAS_SKLEARN
         return self
 

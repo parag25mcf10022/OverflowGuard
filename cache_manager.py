@@ -162,10 +162,11 @@ class CacheManager:
             if not os.path.isfile(path):
                 to_delete.append(rowid)
         if to_delete:
-            placeholders = ",".join("?" * len(to_delete))
-            self._conn.execute(
-                f"DELETE FROM file_cache WHERE rowid IN ({placeholders})",
-                to_delete,
+            # Use executemany with a parameterised single-row DELETE to avoid
+            # any f-string interpolation in SQL (satisfies Bandit B608)
+            self._conn.executemany(
+                "DELETE FROM file_cache WHERE rowid = ?",
+                [(r,) for r in to_delete],
             )
             self._conn.commit()
         return len(to_delete)
