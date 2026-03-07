@@ -45,3 +45,8 @@ audit_report.json
 *~
 .DS_Store
 Thumbs.db
+
+# ── Infer / semgrep artefacts ─────────────────────────────────────────────────
+infer-out/
+.semgrep_cache/
+semgrep-files/

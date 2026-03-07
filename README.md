@@ -2,38 +2,45 @@
 
 **Lead Researcher:** Parag Bagade  
 **GitHub:** [parag25mcf10022/OverflowGuard](https://github.com/parag25mcf10022/OverflowGuard)  
-**Status:** Production Ready — v6.0 (AST + cppcheck + clang-tidy Edition)
+**Status:** Production Ready — v6.0 (Multi-Language Taint + Semgrep + Infer + CI Edition)
+
+![CI](https://github.com/parag25mcf10022/OverflowGuard/actions/workflows/ci.yml/badge.svg)
 
 ---
 
 ## 🚀 Overview
 
-**OverflowGuard** is a polyglot security orchestration framework that detects, classifies, and reports memory-corruption and logic vulnerabilities across C, C++, Python, Go, Rust, and Java source code.
+**OverflowGuard** is a polyglot security orchestration framework that detects, classifies, and reports memory-corruption and logic vulnerabilities across **C, C++, Python, Go, Rust, and Java** source code.
 
-Unlike surface-level scanners, it combines **four independent analysis layers** to minimize false positives and maximize detection confidence:
+Unlike surface-level scanners, it combines **five independent analysis layers** to minimize false positives and maximize detection confidence:
 
 | Layer | Technology | Languages |
 |---|---|---|
-| 1 — AST Sink/Source Tracking | libclang (Python) + regex fallback | C, C++ |
-| 2 — External Static Analysis | cppcheck + clang-tidy | C, C++ |
-| 3 — SAST | Bandit | Python |
-| 4 — Dynamic Fuzzing | AddressSanitizer + mutational fuzzer | C, C++, Python, Go |
+| 1 — Taint / Dataflow Analysis | `taint_analyzer.py` (zero-dependency) | C/C++, Python, Java, Go, Rust |
+| 2 — AST Sink/Source Tracking | libclang (Python) + regex fallback | C, C++ |
+| 3 — External Static Analysis | cppcheck + clang-tidy + semgrep + Infer | C, C++, Python, Java |
+| 4 — SAST | Bandit (30+ rule mappings) | Python |
+| 5 — Dynamic Fuzzing | AddressSanitizer + 10-category mutational fuzzer | C, C++, Python, Go |
 
-All findings are deduplicated, mapped to real CVEs/CWEs/CVSS v3.1 scores, and rendered in a professional HTML dashboard.
+All findings are deduplicated, tagged with **HIGH / MEDIUM / LOW confidence**, mapped to real CVEs/CWEs/CVSS v3.1 scores, and rendered in a professional HTML dashboard.
 
 ---
 
 ## ✨ Features
 
-- **AST-based sink/source tracking** — libclang walks the parse tree to find dangerous calls (`strcpy`, `gets`, `sprintf`, `printf` with variable format), heap vs. stack classification by tracing `malloc`/`calloc` assignments, and pointer use-after-free detection
-- **cppcheck integration** — catches out-of-bounds access, use-after-free, integer overflow, null-pointer dereference, division-by-zero, memory leaks, and more via XML parsing
-- **clang-tidy integration** — runs `clang-analyzer-security.*`, `clang-analyzer-core.*`, `bugprone-*`, and `cert-*` checks
-- **Bandit SAST** — per-test-ID mapping for Python (OS injection, eval, hardcoded secrets, unsafe temp files, insecure deserialization)
-- **Mutational fuzzer** — 5 payload classes (buffer overflow, format string, command injection, integer wrap, null-byte injection) via both argument and stdin channels; ASAN crash messages parsed for precise classification
+- **Multi-language taint analysis** (`taint_analyzer.py`) — zero external dependency dataflow engine with 60+ rules across C/C++ (double-free, off-by-one, integer overflow in alloc sizes, NULL-unchecked malloc, path traversal, weak-RNG), Python (SQL injection, SSRF, template injection, JWT none-alg, XSS, insecure deserialisation), Java (LDAP injection, SpEL injection, open redirect, XXE), Go (insecure TLS, race condition, resource leak), and Rust (unsafe block, `mem::transmute`, panic-unwrap)
+- **AST-based sink/source tracking** — libclang walks the parse tree to find dangerous calls (`strcpy`, `gets`, `sprintf`, `strncat`, `tmpnam`, `system`, `popen`), heap vs. stack classification, double-free detection, and off-by-one loop analysis
+- **cppcheck + clang-tidy integration** — 40+ mapped rule IDs covering buffer overflows, UAF, integer issues, insecure APIs, and cert checks
+- **Semgrep wrapper** — `run_semgrep()` runs `semgrep --config auto`, maps 26 rule IDs to vulnerability types
+- **Facebook Infer wrapper** — `run_infer()` runs Infer on C/Java files, maps 17 bug types including null-dereference and memory leaks
+- **Bandit SAST** — 30+ per-test-ID mappings for Python (OS injection, eval, hardcoded secrets, insecure TLS, weak crypto, YAML load, SQL injection)
+- **10-category smart fuzzer** — buffer overflow, format string, command injection, integer extremes, path traversal, SQL injection, XSS, null/binary, JSON/XML (XXE, prototype pollution), newline flood; `classify_crash()` maps ASAN output and exit signals to specific vulnerability types
 - **Global deduplication** — `(file, issue_type, line)` keyed set prevents the same bug appearing twice regardless of which layer found it
-- **27-entry vulnerability DB** — every entry has a real CVE, accurate CVSS v3.1 base score, correct CWE, detailed description, and remediation
+- **42+ entry vulnerability DB** — every entry has a real CVE, accurate CVSS v3.1 base score, correct CWE, detailed description, and remediation guidance
+- **Confidence badges** — each finding is tagged HIGH (green) / MEDIUM (amber) / LOW (grey) based on detection certainty; shown alongside the vulnerability name in the HTML report
 - **Rich terminal scorecard** — per-file table with CRITICAL/HIGH/MED/LOW columns + colour-coded status badges, ending with a total summary banner
-- **HTML report** — dark-themed dashboard with severity bar charts, detection-stage breakdown, file summary table, and detailed finding cards
+- **HTML report** — dark-themed dashboard with severity breakdown, detection-stage bar chart, file summary, and per-finding cards showing severity + confidence badge + CWE/CVE/CVSS + remediation
+- **GitHub Actions CI** — 4-job pipeline: pytest, cppcheck, Bandit SAST, full scan with HTML artifact upload
 - **Unit test suite** — 24 pytest tests covering AST accuracy, pipeline correctness, deduplication, cppcheck, clang-tidy, edge cases, and robustness
 
 ---
@@ -43,25 +50,29 @@ All findings are deduplicated, mapped to real CVEs/CWEs/CVSS v3.1 scores, and re
 ```
 OverflowGuard/
 ├── main.py               # Entry point, audit pipeline, HTML report, scorecard
+├── taint_analyzer.py     # Multi-language taint/dataflow engine (v6.0)
 ├── ast_analyzer.py       # libclang AST walker + regex fallback
-├── static_tools.py       # cppcheck & clang-tidy integration
-├── fuzzer.py             # Standalone universal input fuzzer
-├── vulnerability_db.py   # 27-entry CVE/CWE/CVSS intelligence database
+├── static_tools.py       # cppcheck, clang-tidy, semgrep & Infer integration
+├── fuzzer.py             # Standalone universal input fuzzer (10 payload categories)
+├── vulnerability_db.py   # 42+ entry CVE/CWE/CVSS intelligence database
 ├── setup.sh              # One-shot environment bootstrap
 ├── requirements.txt      # Python dependencies
 ├── .env.example          # Environment variable template
+├── .github/
+│   └── workflows/
+│       └── ci.yml        # GitHub Actions CI (4 jobs)
 ├── tests/
 │   └── test_audit.py     # 24-test pytest suite
 ├── samples/              # Intentionally vulnerable sample files
 │   ├── stack_overflow.c
 │   ├── heap_overflow.c
 │   ├── use_after.c
-│   ├── logic-flaw.c
-│   ├── engine.rs
+│   ├── sample.c / sample2.c / saft.c / logic-flaw.c
+│   ├── test.cpp / test2.cpp / logic.cpp
+│   ├── engine.rs / key.rs
 │   ├── loader.java
 │   ├── race.go
-│   ├── vault.py
-│   └── ...
+│   └── vault.py
 └── results/              # Generated HTML reports (git-ignored)
 ```
 
@@ -99,10 +110,24 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-Or run the all-in-one bootstrap:
+Or run the all-in-one bootstrap (installs system deps + venv + semgrep):
 
 ```bash
 chmod +x setup.sh && ./setup.sh
+```
+
+### 4. Optional: Facebook Infer
+
+```bash
+# Infer provides deep C/Java null-dereference and memory-leak analysis.
+# Install from: https://fbinfer.com/docs/getting-started
+```
+
+### 5. Environment variables *(optional)*
+
+```bash
+cp .env.example .env
+# Edit .env to set RESEARCHER_NAME, GITHUB_REPO_URL, etc.
 ```
 
 ---
@@ -128,8 +153,7 @@ python3 main.py
 
 ```bash
 python3 fuzzer.py
-# Enter command, e.g.: ./my_binary
-# Choose argument or stdin mode
+# Enter binary/script path, choose payload mode (1=args, 2=stdin, 3=both)
 ```
 
 ### Run the test suite
@@ -144,26 +168,40 @@ python3 -m pytest tests/ -v
 
 ```
 ══════════════════════════════════════════════════════════════════════════════
-         📊  OVERFLOW GUARD — FINAL AUDIT SCORECARD  (v5.3)
+         📊  OVERFLOW GUARD — FINAL AUDIT SCORECARD  (v6.0)
 ══════════════════════════════════════════════════════════════════════════════
 FILE                              FINDS        CRIT      HIGH       MED       LOW  STATUS
 ──────────────────────────────────────────────────────────────────────────────
 stack_overflow.c                      3           2         —         —         —  ⚠  VULNERABLE
 use_after.c                           6           1         2         —         —  ⚠  VULNERABLE
 heap_overflow.c                       4           2         1         —         —  ⚠  VULNERABLE
+sample2.c                            15           2         6         —         —  ⚠  VULNERABLE
 vault.py                              4           4         —         —         —  ⚠  VULNERABLE
 loader.java                           1           1         —         —         —  ⚠  VULNERABLE
+race.go                               1           —         1         —         —  ⚠  VULNERABLE
 engine.rs                             1           —         —         1         —  ⚠  VULNERABLE
 ──────────────────────────────────────────────────────────────────────────────
-TOTAL                                71          19        14         2         —
+TOTAL                                92          19        19        13         4
 ══════════════════════════════════════════════════════════════════════════════
 
   Files scanned   : 15
   Vulnerable      : 15
   Safe            : 0
-  Total findings  : 71  (CRIT:19  HIGH:14  MED:2  LOW:0)
+  Total findings  : 92  (CRIT:19  HIGH:19  MED:13  LOW:4)
 ══════════════════════════════════════════════════════════════════════════════
 ```
+
+---
+
+## 🎯 Confidence Levels
+
+Each finding in the HTML report displays a colour-coded confidence badge:
+
+| Badge | Colour | Meaning |
+|---|---|---|
+| **HIGH** | 🟢 Green | High-certainty detection (direct sink match, taint path confirmed) |
+| **MEDIUM** | 🟡 Amber | Probable vulnerability (pattern match, partial taint path) |
+| **LOW** | ⚫ Grey | Low-certainty signal (heuristic, needs manual review) |
 
 ---
 
@@ -171,43 +209,78 @@ TOTAL                                71          19        14         2         
 
 | Vulnerability Class | CWE | Languages | Detection Method |
 |---|---|---|---|
-| Stack Buffer Overflow | CWE-121 | C/C++ | AST + cppcheck + fuzzer |
-| Heap Buffer Overflow | CWE-122 | C/C++ | AST + cppcheck + ASAN |
-| Use-After-Free | CWE-416 | C/C++ | AST + cppcheck |
+| Stack Buffer Overflow | CWE-121 | C/C++ | AST + Taint + cppcheck + fuzzer |
+| Heap Buffer Overflow | CWE-122 | C/C++ | AST + Taint + cppcheck + ASAN |
+| Use-After-Free | CWE-416 | C/C++ | AST + Taint + cppcheck |
+| Double-Free | CWE-415 | C/C++ | Taint + AST |
+| Off-By-One | CWE-193 | C/C++ | Taint + AST |
+| Integer Overflow / Truncation | CWE-190/197 | C/C++ | Taint + cppcheck + UBSan |
 | Format String | CWE-134 | C/C++ | AST + clang-tidy |
-| Integer Overflow | CWE-190 | C/C++ | cppcheck + UBSan |
-| Null Pointer Deref | CWE-476 | C/C++ | cppcheck + Clang SA |
-| Division by Zero | CWE-369 | C/C++ | cppcheck |
-| Memory Leak | CWE-401 | C/C++ | cppcheck |
-| OS Command Injection | CWE-78 | Python | Bandit + fuzzer |
+| Null Pointer Deref | CWE-476 | C/C++ | cppcheck + Clang SA + Infer |
+| Memory Leak | CWE-401 | C/C++ | cppcheck + Infer |
+| Insecure Temp File | CWE-377 | C/C++ | AST (`tmpnam`/`mktemp`) |
+| Weak RNG | CWE-338 | C/C++, Python, Java, Go | Taint + Bandit |
+| Weak Crypto | CWE-327 | C/C++, Python, Java, Go | Taint + Bandit + semgrep |
+| SQL Injection | CWE-89 | Python, Java, Go | Taint + Bandit |
+| OS Command Injection | CWE-78 | Python, Java, Go, Rust | Taint + Bandit + fuzzer |
+| Path Traversal | CWE-22 | C/C++, Python, Java | Taint |
+| SSRF | CWE-918 | Python, Go | Taint |
+| Template Injection | CWE-94 | Python, Java | Taint |
+| XSS | CWE-79 | Python | Taint |
+| Open Redirect | CWE-601 | Python, Java, Go | Taint |
+| LDAP Injection | CWE-90 | Java | Taint |
+| XXE Injection | CWE-611 | Python, Java | Taint |
+| JWT None-Alg | CWE-347 | Python | Taint |
+| Insecure Deserialization | CWE-502 | Python, Java | Taint + Bandit |
+| Hardcoded Password | CWE-259 | Python, Java, Go, Rust | Taint + Bandit |
+| Insecure TLS | CWE-295 | Python, Go | Taint + Bandit |
+| Insecure Config | CWE-16 | Python | Taint |
+| Resource Leak | CWE-772 | Go | Taint |
+| Unsafe Block / Transmute | CWE-119 | Rust | Taint + static |
+| Panic / Unwrap | CWE-248 | Rust | Taint |
+| Race Condition | CWE-362 | Go | Go race detector + Taint |
 | Insecure Eval | CWE-95 | Python | Bandit |
-| Hardcoded Password | CWE-259 | Python | Bandit |
-| Race Condition | CWE-362 | Go | Go race detector |
-| Unsafe Block | CWE-119 | Rust | Static keyword scan |
-| Insecure Deserialization | CWE-502 | Java | Static pattern |
 
 ---
 
 ## 📋 Requirements
 
 ### Python packages
+
 ```
 colorama>=0.4.6
 libclang>=18.1.1
 bandit>=1.7.0
 pytest>=7.0
+semgrep>=1.60.0
 ```
 
 ### System tools
+
 | Tool | Purpose | Install |
 |---|---|---|
 | `gcc` / `g++` | Compile with ASAN/UBSan | `apt install gcc g++` |
 | `cppcheck` | Static analysis (XML) | `apt install cppcheck` |
 | `clang-tidy` | Clang static analyzer | `apt install clang-tidy` |
+| `semgrep` | Multi-language SAST patterns | `pip install semgrep` |
+| `infer` | Facebook deep C/Java analysis | [fbinfer.com](https://fbinfer.com) |
 | `go` | Go race detector | `apt install golang-go` |
-| `rustc` | Rust keyword scan | `apt install rustc` |
-| `java` | Java deserialization check | `apt install openjdk-17-jdk` |
+| `rustc` | Rust keyword/taint scan | `apt install rustc` |
+| `java` | Java static pattern checks | `apt install openjdk-17-jdk` |
 | `bandit` | Python SAST | `pip install bandit` |
+
+---
+
+## 🔄 CI/CD
+
+The repository ships with a **GitHub Actions** workflow (`.github/workflows/ci.yml`) that runs on every push to `main` or `feature/**`:
+
+| Job | Steps |
+|---|---|
+| `test` | Install deps, run `pytest tests/test_audit.py -v` |
+| `static-analysis` | Run cppcheck on `samples/`, upload result artifact |
+| `bandit` | Run `bandit -r .`, upload result artifact |
+| `full-scan` | Run `python main.py` on `samples/`, upload HTML report artifact |
 
 ---
 
@@ -216,7 +289,7 @@ pytest>=7.0
 1. Fork the repository
 2. Create a feature branch: `git checkout -b feat/your-feature`
 3. Add tests in `tests/test_audit.py` for any new detection logic
-4. Run `python -m pytest tests/ -v` — all tests must pass
+4. Run `python -m pytest tests/ -v` — all 24 tests must pass
 5. Open a Pull Request
 
 ---

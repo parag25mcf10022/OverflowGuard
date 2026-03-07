@@ -1,8 +1,8 @@
 #!/bin/bash
-# setup.sh — One-shot environment bootstrap for OverflowGuard v5.3
+# setup.sh — One-shot environment bootstrap for OverflowGuard v6.0
 set -e
 
-echo "🛡️  Configuring OverflowGuard v5.3 Environment..."
+echo "🛡️  Configuring OverflowGuard v6.0 Environment..."
 echo ""
 
 # ── System dependencies ───────────────────────────────────────────────────────
@@ -28,6 +28,13 @@ python3 -m venv .venv
 echo "[*] Installing Python dependencies..."
 .venv/bin/pip install --upgrade pip -q
 .venv/bin/pip install -r requirements.txt -q
+
+# ── Semgrep (multi-language SAST) ─────────────────────────────────────────────
+echo "[*] Installing semgrep (multi-language SAST)..."
+.venv/bin/pip install semgrep -q
+
+# ── Facebook Infer (optional — manual install required) ───────────────────────
+echo "[i] Facebook Infer is optional. Install from: https://fbinfer.com/docs/getting-started"
 
 # ── Project directories ───────────────────────────────────────────────────────
 mkdir -p results
