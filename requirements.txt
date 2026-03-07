@@ -19,7 +19,23 @@ flawfinder==2.0.19
 requests==2.31.0
 click==8.1.7
 
-# External tools (install via OS package manager, not pip):
+# ── v7.0 optional advanced-analysis dependencies ─────────────────────────────
+# These are gracefully skipped when not installed; the tool still works.
+
+# symbolic_check.py  — Z3 SMT solver (enables symbolic range-propagation)
+# z3-solver>=4.12.0
+
+# ml_filter.py       — ML false-positive filter (RandomForest)
+# scikit-learn>=1.3.0
+
+# concolic_fuzzer.py — angr symbolic execution (heavy; ~1 GB install)
+# angr>=9.2
+
+# ── External tools (install via OS package manager, not pip): ─────────────────
 #   cppcheck   — sudo apt install cppcheck
 #   clang-tidy — sudo apt install clang-tidy
+#   clang      — sudo apt install clang          (for llvm_analyzer.py)
+#   llvm       — sudo apt install llvm           (for opt / llvm-dis)
+#   afl++      — sudo apt install afl++          (for concolic_fuzzer.py tier 2)
+#   bear       — sudo apt install bear           (for build_integration.py)
 #   infer      — https://github.com/facebook/infer/releases (optional)

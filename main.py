@@ -13,6 +13,23 @@ from static_tools  import run_all as run_static_tools, is_available
 from taint_analyzer import TaintAnalyzer
 from deep_analyzer import DeepAnalyzer
 
+# ── v7.0 advanced analysis modules ──────────────────────────────────────────
+from dataflow import DataflowAnalyzer
+from call_summary import CallSummaryDB
+from symbolic_check import SymbolicChecker
+from interprocedural_taint import InterproceduralAnalyzer
+from build_integration import BuildIntegrator
+from cache_manager import CacheManager
+from concurrency_analyzer import ConcurrencyAnalyzer
+from ml_filter import MLFilter
+from llvm_analyzer import LLVMAnalyzer
+from concolic_fuzzer import ConcolicFuzzer
+
+# Shared singletons (created once per process)
+_CACHE    = CacheManager(version="7.0")
+_ML       = MLFilter()
+_CALL_DB  = CallSummaryDB()
+
 
 init(autoreset=True)
 
@@ -25,7 +42,7 @@ except ImportError:
 # --- CONFIGURATION ---
 RESEARCHER_NAME = "Parag Bagade"
 GITHUB_REPO_URL = "https://github.com/parag25mcf10022/OverflowGuard"
-VERSION = "v6.0"
+VERSION = "v7.0"
 
 class AuditManager:
     def __init__(self, target_input):
@@ -518,6 +535,67 @@ def audit_cpp(file_path, audit_obj):
                               note_override=df.note,
                               confidence_override=df.confidence)
 
+    # --- Stage 1d: Intra-procedural data-flow with sanitizer recognition ---
+    df_findings = DataflowAnalyzer().analyze(file_path)
+    df_findings  = _ML.filter(df_findings)
+    for ff in df_findings:
+        print(f"{Fore.RED}[!!!] Dataflow [{ff.confidence}] {ff.issue_type} "
+              f"@ line {ff.line} — {ff.note[:120]}")
+        audit_obj.add_finding(file_path, "Dataflow", ff.issue_type,
+                              line_override=ff.line,
+                              snippet_override=ff.snippet,
+                              note_override=ff.note,
+                              confidence_override=ff.confidence)
+
+    # --- Stage 1e: Inter-procedural call-graph taint propagation ---
+    ip_findings = InterproceduralAnalyzer().analyze_file(file_path)
+    ip_findings  = _ML.filter(ip_findings)
+    for ipf in ip_findings:
+        print(f"{Fore.RED}[!!!] InterProc [{ipf.confidence}] {ipf.issue_type} "
+              f"@ line {ipf.line} — {ipf.note[:120]}")
+        audit_obj.add_finding(file_path, "Interprocedural", ipf.issue_type,
+                              line_override=ipf.line,
+                              snippet_override=ipf.snippet,
+                              note_override=ipf.note,
+                              confidence_override=ipf.confidence)
+
+    # --- Stage 1f: Symbolic range-propagation (Z3 if available, else interval) ---
+    sym_findings = SymbolicChecker().analyze(file_path)
+    sym_findings  = _ML.filter(sym_findings)
+    for sf in sym_findings:
+        print(f"{Fore.CYAN}[~] Symbolic [{sf.confidence}] {sf.issue_type} "
+              f"@ line {sf.line} — {sf.note[:120]}")
+        audit_obj.add_finding(file_path, "Symbolic", sf.issue_type,
+                              line_override=sf.line,
+                              snippet_override=sf.snippet,
+                              note_override=sf.note,
+                              confidence_override=sf.confidence)
+
+    # --- Stage 1g: Concurrency bug detection ---
+    conc_findings = ConcurrencyAnalyzer().analyze(file_path)
+    conc_findings  = _ML.filter(conc_findings)
+    for cf in conc_findings:
+        print(f"{Fore.MAGENTA}[T] Concurrency [{cf.confidence}] {cf.issue_type} "
+              f"@ line {cf.line} — {cf.note[:120]}")
+        audit_obj.add_finding(file_path, "Concurrency", cf.issue_type,
+                              line_override=cf.line,
+                              snippet_override=cf.snippet,
+                              note_override=cf.note,
+                              confidence_override=cf.confidence)
+
+    # --- Stage 1h: LLVM IR analysis (runs only when clang is on PATH) ---
+    if LLVMAnalyzer.is_available():
+        llvm_findings = LLVMAnalyzer().analyze(file_path)
+        llvm_findings  = _ML.filter(llvm_findings)
+        for lf in llvm_findings:
+            print(f"{Fore.RED}[!!!] LLVM [{lf.confidence}] {lf.issue_type} "
+                  f"@ line {lf.line} — {lf.note[:120]}")
+            audit_obj.add_finding(file_path, "LLVM", lf.issue_type,
+                                  line_override=lf.line,
+                                  snippet_override=lf.snippet,
+                                  note_override=lf.note,
+                                  confidence_override=lf.confidence)
+
     # --- Stage 2: cppcheck + clang-tidy ---
     tool_findings = run_static_tools(file_path)
     for tf in tool_findings:
@@ -528,6 +606,17 @@ def audit_cpp(file_path, audit_obj):
                               line_override=tf.line,
                               snippet_override="",
                               note_override=tf.message)
+
+    # --- Stage 2b: Concolic / hybrid fuzzing (Tier 1=angr, 2=AFL, 3=heuristic) ---
+    conc_fuzz_findings = ConcolicFuzzer().fuzz(file_path)
+    for czf in conc_fuzz_findings:
+        print(f"{Fore.RED}[!!!] Concolic [{czf.confidence}] {czf.issue_type} "
+              f"@ line {czf.line} — {czf.note[:120]}")
+        audit_obj.add_finding(file_path, "Concolic", czf.issue_type,
+                              line_override=czf.line,
+                              snippet_override=czf.snippet,
+                              note_override=czf.note,
+                              confidence_override=czf.confidence)
 
     # Try to compile with sanitizers and run dynamic fuzzing
     proc_compile = subprocess.run(cmd, capture_output=True)
