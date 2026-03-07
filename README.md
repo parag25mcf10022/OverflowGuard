@@ -123,13 +123,6 @@ chmod +x setup.sh && ./setup.sh
 # Install from: https://fbinfer.com/docs/getting-started
 ```
 
-### 5. Environment variables *(optional)*
-
-```bash
-cp .env.example .env
-# Edit .env to set RESEARCHER_NAME, GITHUB_REPO_URL, etc.
-```
-
 ---
 
 ## ▶️ Usage
