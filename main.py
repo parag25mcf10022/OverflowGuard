@@ -128,7 +128,7 @@ class AuditManager:
 
     def add_finding(self, filename, stage, finding_type,
                     line_override=None, snippet_override=None,
-                    note_override=None):
+                    note_override=None, confidence_override=None):
         if filename not in self.report_data:
             self.report_data[filename] = []
 
@@ -160,6 +160,7 @@ class AuditManager:
             "remediation": intel.get("fix", "Review security best practices."),
             "line": line_num,
             "snippet": snippet,
+            "confidence": confidence_override or "Medium",
             "note": note_override or "",
         })
 
@@ -240,6 +241,8 @@ class AuditManager:
                 note  = html_module.escape(str(f.get("note", "")))
                 desc  = html_module.escape(str(f["description"]))
                 remed = html_module.escape(str(f["remediation"]))
+                conf  = f.get("confidence", "Medium")
+                conf_colour = {"High": "#69f0ae", "Medium": "#ffd740", "Low": "#9e9e9e"}.get(conf, "#9e9e9e")
                 cards_html += f"""
 <div style="background:#181818;padding:22px 28px;margin-bottom:18px;
             border-radius:10px;border-left:8px solid {acc};">
@@ -247,6 +250,8 @@ class AuditManager:
     <span style="background:{acc};color:#000;padding:3px 12px;
                 border-radius:4px;font-weight:700;font-size:.8em;">{sev}</span>
     <span style="font-size:1.15em;font-weight:700;color:#ff5252;">{html_module.escape(f['issue'].upper())}</span>
+    <span style="background:{conf_colour};color:#000;padding:3px 10px;
+                border-radius:4px;font-weight:700;font-size:.75em;">{conf.upper()} CONFIDENCE</span>
   </div>
   <p style="color:#bbb;margin:0 0 12px;">{desc}</p>
   {'<p style="color:#aaa;font-size:.85em;font-style:italic;">' + note + '</p>' if note else ''}
@@ -487,7 +492,8 @@ def audit_cpp(file_path, audit_obj):
         audit_obj.add_finding(file_path, ast_label, af.issue_type,
                               line_override=af.line,
                               snippet_override=af.snippet,
-                              note_override=af.note)
+                              note_override=af.note,
+                              confidence_override=af.confidence)
 
     # --- Stage 1b: Taint analysis ---
     taint_findings = TaintAnalyzer().analyze(file_path)
@@ -497,7 +503,8 @@ def audit_cpp(file_path, audit_obj):
         audit_obj.add_finding(file_path, "Taint", tf.issue_type,
                               line_override=tf.line,
                               snippet_override=tf.snippet,
-                              note_override=tf.note)
+                              note_override=tf.note,
+                              confidence_override=tf.confidence)
 
     # --- Stage 2: cppcheck + clang-tidy ---
     tool_findings = run_static_tools(file_path)
@@ -556,7 +563,8 @@ def audit_python(file_path, audit_obj):
         audit_obj.add_finding(file_path, "Taint", tf.issue_type,
                               line_override=tf.line,
                               snippet_override=tf.snippet,
-                              note_override=tf.note)
+                              note_override=tf.note,
+                              confidence_override=tf.confidence)
 
     crashed, _ = audit_obj.run_fuzzer(["python3", file_path], file_path)
     if crashed:
@@ -646,7 +654,8 @@ def audit_go(file_path, audit_obj):
         audit_obj.add_finding(file_path, "Taint", tf.issue_type,
                               line_override=tf.line,
                               snippet_override=tf.snippet,
-                              note_override=tf.note)
+                              note_override=tf.note,
+                              confidence_override=tf.confidence)
 
     crashed, _ = audit_obj.run_fuzzer(["go", "run", "-race", file_path], file_path)
     if crashed:
@@ -664,7 +673,8 @@ def audit_rust(file_path, audit_obj):
         audit_obj.add_finding(file_path, "Taint", tf.issue_type,
                               line_override=tf.line,
                               snippet_override=tf.snippet,
-                              note_override=tf.note)
+                              note_override=tf.note,
+                              confidence_override=tf.confidence)
 
     with open(file_path, 'r') as f:
         content = f.read()
@@ -687,7 +697,8 @@ def audit_java(file_path, audit_obj):
         audit_obj.add_finding(file_path, "Taint", tf.issue_type,
                               line_override=tf.line,
                               snippet_override=tf.snippet,
-                              note_override=tf.note)
+                              note_override=tf.note,
+                              confidence_override=tf.confidence)
 
     with open(file_path, 'r') as f:
         content = f.read()
