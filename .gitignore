@@ -50,3 +50,19 @@ Thumbs.db
 infer-out/
 .semgrep_cache/
 semgrep-files/
+
+# ── tree-sitter build artefacts (v9.0) ────────────────────────────────────────
+*.so
+build/
+*.whl
+
+# ── Z3 solver cache ──────────────────────────────────────────────────────────
+*.smt2
+
+# ── Scan cache (v7.0+) ───────────────────────────────────────────────────────
+overflow_cache.db
+overflow_cache.db-journal
+
+# ── ML model artefacts ────────────────────────────────────────────────────────
+*.pkl
+*.joblib

@@ -32,6 +32,12 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install colorama libclang bandit pytest semgrep
+          pip install tree-sitter \
+            tree-sitter-c tree-sitter-cpp tree-sitter-python \
+            tree-sitter-java tree-sitter-go tree-sitter-rust \
+            tree-sitter-javascript tree-sitter-typescript \
+            tree-sitter-php tree-sitter-ruby tree-sitter-c-sharp
+          pip install z3-solver
 
       - name: Run pytest
         run: pytest tests/test_audit.py -v --tb=short
@@ -121,6 +127,12 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             cppcheck clang-tidy gcc g++ libclang-dev
           pip install colorama libclang bandit
+          pip install tree-sitter \
+            tree-sitter-c tree-sitter-cpp tree-sitter-python \
+            tree-sitter-java tree-sitter-go tree-sitter-rust \
+            tree-sitter-javascript tree-sitter-typescript \
+            tree-sitter-php tree-sitter-ruby tree-sitter-c-sharp
+          pip install z3-solver
 
       - name: Run OverflowGuard on samples/
         run: echo "samples" | python main.py

@@ -185,28 +185,27 @@ python3 -m pytest tests/ -v
 ## 📊 Example Terminal Output
 
 ```
-══════════════════════════════════════════════════════════════════════════════
-         📊  OVERFLOW GUARD — FINAL AUDIT SCORECARD  (v7.1)
-══════════════════════════════════════════════════════════════════════════════
-FILE                              FINDS        CRIT      HIGH       MED       LOW  STATUS
-──────────────────────────────────────────────────────────────────────────────
-stack_overflow.c                      3           2         —         —         —  ⚠  VULNERABLE
-use_after.c                           6           1         2         —         —  ⚠  VULNERABLE
-heap_overflow.c                       4           2         1         —         —  ⚠  VULNERABLE
-sample2.c                            15           2         6         —         —  ⚠  VULNERABLE
-vault.py                              4           4         —         —         —  ⚠  VULNERABLE
-loader.java                           1           1         —         —         —  ⚠  VULNERABLE
-race.go                               1           —         1         —         —  ⚠  VULNERABLE
-engine.rs                             1           —         —         1         —  ⚠  VULNERABLE
-──────────────────────────────────────────────────────────────────────────────
-TOTAL                                92          19        19        13         4
-══════════════════════════════════════════════════════════════════════════════
+⛔  OVERFLOW GUARD v9.0 | Researcher: Parag Bagade
 
-  Files scanned   : 15
-  Vulnerable      : 15
-  Safe            : 0
-  Total findings  : 92  (CRIT:19  HIGH:19  MED:13  LOW:4)
-══════════════════════════════════════════════════════════════════════════════
+┌─────────────────────────────────────────────────────────────────┐
+│ ANALYZING: sample.c                                               │
+└─────────────────────────────────────────────────────────────────┘
+[*] v9.0 AST(tree‑sitter) real dataflow / symbolic pass (c)...
+[!!!] RealDataflow [High] use-after-free @ line 23
+[!!!] RealDataflow [Medium] buffer-overflow @ line 21
+[~] Symbolic(Z3) [High] buffer-overflow @ line 13 — Z3 proved: strcpy overflow
+[~] Symbolic(interval) [High] buffer-overflow @ line 9 — index > buffer size
+[!!!] AST: [HIGH] stack-buffer-overflow @ line 13 — Dangerous call to strcpy()
+[!!!] AST: [HIGH] use-after-free @ line 23 — Pointer 'ptr' used after free()
+[!] cppcheck: [error] Array 'ptr[10]' accessed at index 49 @ line 21
+[!!!] Concolic [HIGH] stack-buffer-overflow @ line 13 — Heuristic fuzzing crash
+
+───  v9.0 Summary  ───
+  AST engine           : AST(tree‑sitter)
+  Languages supported  : C, C++, Python, Java, Go, Rust, JS, TS, PHP, Ruby, C#
+  SCA findings         : 0 CVEs in dependencies
+  Secrets detected     : 0
+  SBOM components      : 0 dependencies documented
 ```
 
 ---
@@ -275,15 +274,22 @@ requests==2.31.0
 click==8.1.7
 flawfinder==2.0.19
 
+# v9.0 — Real AST + CFG dataflow + symbolic execution
+tree-sitter>=0.25.0
+tree-sitter-c  tree-sitter-cpp  tree-sitter-python
+tree-sitter-java  tree-sitter-go  tree-sitter-rust
+tree-sitter-javascript  tree-sitter-typescript
+tree-sitter-php  tree-sitter-ruby  tree-sitter-c-sharp
+z3-solver>=4.12.0        # real_symbolic.py (Z3 SMT solver)
+
 # Optional — advanced analysis (gracefully skipped when absent)
-z3-solver>=4.12.0        # symbolic_check.py
 scikit-learn>=1.3.0      # ml_filter.py
 angr>=9.2                # concolic_fuzzer.py  (~1 GB)
 ```
 
 The SCA, secrets, SBOM, and SARIF modules use only the Python standard library (`urllib`, `hashlib`, `json`, `re`) — **no extra pip packages required** for the v8.0 features.
 
-The v9.0 real-analysis engine requires `tree-sitter-languages` (`pip install tree-sitter-languages`). Without it, the tool gracefully falls back to the regex-based analysis of previous versions.
+The v9.0 real-analysis engine uses individual `tree-sitter-*` grammar wheels (11 languages). Without them, the tool gracefully falls back to regex-based analysis. Z3 (`z3-solver`) enables proven symbolic execution findings with counterexamples; without it the engine falls back to interval abstract interpretation.
 
 ### System tools
 
@@ -296,6 +302,8 @@ The v9.0 real-analysis engine requires `tree-sitter-languages` (`pip install tre
 | `afl++` | Mutation fuzzing tier | `apt install afl++` |
 | `bear` | Compilation DB for clang-tidy | `apt install bear` |
 | `semgrep` | Multi-language SAST patterns | `pip install semgrep` |
+| `tree-sitter` | v9.0 real AST parsing (14 languages) | `pip install tree-sitter tree-sitter-c ...` |
+| `z3-solver` | v9.0 symbolic execution + proofs | `pip install z3-solver` |
 | `infer` | Facebook deep C/Java analysis | [fbinfer.com](https://fbinfer.com) |
 | `go` | Go race detector | `apt install golang-go` |
 | `rustc` | Rust keyword/taint scan | `apt install rustc` |

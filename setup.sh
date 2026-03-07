@@ -35,6 +35,19 @@ echo "[*] Installing Python dependencies..."
 echo "[*] Installing semgrep (multi-language SAST)..."
 .venv/bin/pip install semgrep -q
 
+# ── v9.0: tree-sitter grammars (real AST parsing for 11 languages) ────────────
+echo "[*] Installing tree-sitter + language grammars (v9.0)..."
+.venv/bin/pip install -q \
+    tree-sitter \
+    tree-sitter-c tree-sitter-cpp tree-sitter-python \
+    tree-sitter-java tree-sitter-go tree-sitter-rust \
+    tree-sitter-javascript tree-sitter-typescript \
+    tree-sitter-php tree-sitter-ruby tree-sitter-c-sharp
+
+# ── v9.0: Z3 SMT solver (symbolic execution with counterexamples) ─────────────
+echo "[*] Installing Z3 SMT solver (v9.0)..."
+.venv/bin/pip install -q z3-solver
+
 # ── Facebook Infer (optional — manual install required) ───────────────────────
 echo "[i] Facebook Infer is optional. Install from: https://fbinfer.com/docs/getting-started"
 
@@ -60,9 +73,9 @@ echo ""
 echo "    Run tests:"
 echo "      python3 -m pytest tests/ -v"
 echo ""
-echo "    Optional — install tree-sitter for real AST parsing (14 languages):"
-echo "      pip install tree-sitter-languages"
-echo "    Optional — install ML / symbolic extras:"
-echo "      pip install scikit-learn z3-solver"
+echo "    v9.0 real analysis engines are installed (tree-sitter + Z3)."
+echo ""
+echo "    Optional — install ML false-positive filter:"
+echo "      pip install scikit-learn"
 echo "    Optional — install angr concolic engine (~1 GB):"
 echo "      pip install angr"
