@@ -105,13 +105,6 @@ Or run the all-in-one bootstrap:
 chmod +x setup.sh && ./setup.sh
 ```
 
-### 4. Environment variables *(optional)*
-
-```bash
-cp .env.example .env
-# Edit .env to set RESEARCHER_NAME, GITHUB_REPO_URL, etc.
-```
-
 ---
 
 ## ▶️ Usage
