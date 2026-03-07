@@ -1,7 +1,6 @@
 # 🛡️ OverflowGuard v5.3
 
 **Lead Researcher:** Parag Bagade  
-**Academic Context:** M.Tech in Cyber Security & Digital Forensics, VIT Bhopal  
 **GitHub:** [parag25mcf10022/OverflowGuard](https://github.com/parag25mcf10022/OverflowGuard)  
 **Status:** Production Ready — v5.3 (AST + cppcheck + clang-tidy Edition)
 
