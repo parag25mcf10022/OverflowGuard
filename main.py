@@ -34,10 +34,21 @@ from sbom_generator import generate_sbom
 # ── v8.1 GitHub repository scanner ─────────────────────────────────────────
 from github_scanner import fetch_repo, is_github_input, parse_repo_input
 
+# ── v9.0 Real AST / Dataflow / Symbolic / FP‑filter engines ────────────────
+from tree_sitter_engine import (
+    TS_AVAILABLE, ASTQueries, parse_file, language_for_file,
+    supported_extensions, EXT_LANG_MAP,
+)
+from cfg_builder import build_cfgs
+from real_dataflow import RealDataflowAnalyzer, DataflowFinding
+from real_symbolic import RealSymbolicAnalyzer, SymbolicFinding
+from false_positive_filter import FalsePositiveFilter, Finding
+
 # Shared singletons (created once per process)
-_CACHE    = CacheManager(version="8.1")
+_CACHE    = CacheManager(version="9.0")
 _ML       = MLFilter()
 _CALL_DB  = CallSummaryDB()
+_TS_LABEL = "AST(tree‑sitter)" if TS_AVAILABLE else "AST(regex)"
 
 
 init(autoreset=True)
@@ -51,7 +62,7 @@ except ImportError:
 # --- CONFIGURATION ---
 RESEARCHER_NAME = "Parag Bagade"
 GITHUB_REPO_URL = "https://github.com/parag25mcf10022/OverflowGuard"
-VERSION = "v8.1"
+VERSION = "v9.0"
 
 class AuditManager:
     def __init__(self, target_input):
@@ -510,6 +521,10 @@ def audit_cpp(file_path, audit_obj):
     ext = os.path.splitext(file_path)[1].lower()
     base_flags = ["-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all"]
     cmd = ["g++" if ext in [".cpp", ".cc"] else "gcc"] + base_flags + [file_path, "-o", out_bin]
+
+    # --- Stage 0: v9.0 real AST/dataflow/symbolic analysis ---
+    _run_real_analysis(file_path, audit_obj)
+
     # --- Stage 1: AST / regex-based sink–source analysis ---
     ast_label = "AST" if CLANG_AVAILABLE else "AST(regex)"
     ast_findings = ASTAnalyzer(file_path).analyze()
@@ -665,6 +680,9 @@ def audit_cpp(file_path, audit_obj):
 def audit_python(file_path, audit_obj):
     print(f"{Fore.YELLOW}[*] Running Bandit SAST, Taint Analysis & Fuzzer on Python file...")
 
+    # --- v9.0 real AST/dataflow/symbolic analysis ---
+    _run_real_analysis(file_path, audit_obj)
+
     # --- Taint analysis ---
     taint_findings = TaintAnalyzer().analyze(file_path)
     for tf in taint_findings:
@@ -756,6 +774,9 @@ def _bandit_map(test_id: str) -> str:
 def audit_go(file_path, audit_obj):
     print(f"{Fore.YELLOW}[*] Running Go Race Detector, Taint Analysis & Fuzzer...")
 
+    # --- v9.0 real AST/dataflow/symbolic analysis ---
+    _run_real_analysis(file_path, audit_obj)
+
     # Taint analysis
     taint_findings = TaintAnalyzer().analyze(file_path)
     for tf in taint_findings:
@@ -774,6 +795,9 @@ def audit_go(file_path, audit_obj):
 
 def audit_rust(file_path, audit_obj):
     print(f"{Fore.YELLOW}[*] Running Rust Safety Audit & Taint Analysis...")
+
+    # --- v9.0 real AST/dataflow/symbolic analysis ---
+    _run_real_analysis(file_path, audit_obj)
 
     # Taint analysis
     taint_findings = TaintAnalyzer().analyze(file_path)
@@ -798,6 +822,9 @@ def audit_rust(file_path, audit_obj):
 
 def audit_java(file_path, audit_obj):
     print(f"{Fore.YELLOW}[*] Static Analyzing Java patterns + Taint Analysis...")
+
+    # --- v9.0 real AST/dataflow/symbolic analysis ---
+    _run_real_analysis(file_path, audit_obj)
 
     # Taint analysis
     taint_findings = TaintAnalyzer().analyze(file_path)
@@ -825,6 +852,82 @@ def audit_java(file_path, audit_obj):
         print(f"{Fore.YELLOW}[!] Static: java.util.Random is not cryptographically secure.")
         audit_obj.add_finding(file_path, "Static", "weak-rng")
 
+# ---------------------------------------------------------------------------
+# v9.0 — shared real‑analysis entry point for ALL languages
+# ---------------------------------------------------------------------------
+
+def _run_real_analysis(file_path: str, audit_obj) -> None:
+    """Run v9.0 tree‑sitter AST, real dataflow, symbolic & FP‑filter on any
+    supported language.  Called by every audit_* function."""
+    if not TS_AVAILABLE:
+        return
+    lang = language_for_file(file_path)
+    if lang is None:
+        return
+
+    print(f"{Fore.CYAN}[*] v9.0 {_TS_LABEL} real dataflow / symbolic pass ({lang})...")
+
+    # -- 1. Real dataflow + taint -------------------------------------------
+    df_findings = RealDataflowAnalyzer().analyze(file_path)
+    for df in df_findings:
+        print(f"{Fore.RED}[!!!] RealDataflow [{df.confidence}] {df.issue_type} "
+              f"@ line {df.line} — {df.note[:120]}")
+        audit_obj.add_finding(file_path, "RealDataflow", df.issue_type,
+                              line_override=df.line,
+                              snippet_override=df.snippet,
+                              note_override=df.note,
+                              confidence_override=df.confidence)
+
+    # -- 2. Real symbolic execution -----------------------------------------
+    sym_findings = RealSymbolicAnalyzer().analyze(file_path)
+    for sf in sym_findings:
+        label = "Symbolic(Z3)" if sf.counterexample else "Symbolic(interval)"
+        print(f"{Fore.CYAN}[~] {label} [{sf.confidence}] {sf.issue_type} "
+              f"@ line {sf.line} — {sf.note[:120]}")
+        ce_note = sf.note
+        if sf.counterexample:
+            ce_note += f" | Counterexample: {sf.counterexample}"
+        audit_obj.add_finding(file_path, label, sf.issue_type,
+                              line_override=sf.line,
+                              snippet_override=sf.snippet,
+                              note_override=ce_note,
+                              confidence_override=sf.confidence)
+
+
+def audit_multi_language(file_path: str, audit_obj) -> None:
+    """Generic audit for languages that only have tree‑sitter analysis
+    (JS, TS, PHP, Ruby, C#, Kotlin, Swift, Scala)."""
+    lang = language_for_file(file_path) or os.path.splitext(file_path)[1]
+    print(f"{Fore.YELLOW}[*] Running AST + dataflow + symbolic analysis ({lang})...")
+
+    # v9.0 real analysis
+    _run_real_analysis(file_path, audit_obj)
+
+    # Concurrency analysis (regex‑based — still useful for Go / Java / Python)
+    conc_findings = ConcurrencyAnalyzer().analyze(file_path)
+    conc_findings = _ML.filter(conc_findings)
+    for cf in conc_findings:
+        print(f"{Fore.MAGENTA}[T] Concurrency [{cf.confidence}] {cf.issue_type} "
+              f"@ line {cf.line} — {cf.note[:120]}")
+        audit_obj.add_finding(file_path, "Concurrency", cf.issue_type,
+                              line_override=cf.line,
+                              snippet_override=cf.snippet,
+                              note_override=cf.note,
+                              confidence_override=cf.confidence)
+
+
+# v9.0 — extensions supported by the tree‑sitter multi‑language path
+_MULTI_LANG_EXTS = {
+    ".js", ".mjs", ".cjs", ".jsx",
+    ".ts", ".tsx",
+    ".php",
+    ".rb",
+    ".cs",
+    ".kt", ".kts",
+    ".swift",
+    ".scala", ".sc",
+}
+
 def analyze_file(file_path, audit_obj):
     audit_obj.stats["scanned"] += 1
     ext = os.path.splitext(file_path)[1].lower()
@@ -834,6 +937,7 @@ def analyze_file(file_path, audit_obj):
     elif ext == ".go": audit_go(file_path, audit_obj)
     elif ext == ".rs": audit_rust(file_path, audit_obj)
     elif ext == ".java": audit_java(file_path, audit_obj)
+    elif ext in _MULTI_LANG_EXTS: audit_multi_language(file_path, audit_obj)
 
 if __name__ == "__main__":
     print(f"\n{Fore.CYAN}\u26d4  OVERFLOW GUARD {VERSION} | Researcher: {RESEARCHER_NAME}")
@@ -901,7 +1005,18 @@ if __name__ == "__main__":
                 and not d.endswith((".egg-info", ".dist-info"))
             ]
             for f in files:
-                if f.endswith((".c", ".cpp", ".cc", ".py", ".go", ".rs", ".java")):
+                # v9.0: support 14 languages (C/C++, Python, Java, Go, Rust,
+                # JavaScript, TypeScript, PHP, Ruby, C#, Kotlin, Swift, Scala)
+                _SCAN_EXTS = (
+                    ".c", ".cpp", ".cc", ".py", ".go", ".rs", ".java",
+                    ".js", ".mjs", ".cjs", ".jsx",
+                    ".ts", ".tsx",
+                    ".php", ".rb", ".cs",
+                    ".kt", ".kts",
+                    ".swift",
+                    ".scala", ".sc",
+                )
+                if f.endswith(_SCAN_EXTS):
                     analyze_file(os.path.join(root, f), audit)
     elif os.path.isfile(path_input):
         analyze_file(path_input, audit)
@@ -1028,8 +1143,10 @@ if __name__ == "__main__":
     except Exception as _sarif_err:
         print(f"{Fore.YELLOW}[!] SARIF generation failed: {_sarif_err}")
 
-    # ── Final v8.0 summary banner ─────────────────────────────────────────────
-    print(f"\n{Fore.CYAN}━━━  v8.0 Summary  ━━━{Style.RESET_ALL}")
+    # ── Final v9.0 summary banner ─────────────────────────────────────────────
+    print(f"\n{Fore.CYAN}━━━  v9.0 Summary  ━━━{Style.RESET_ALL}")
+    print(f"  AST engine           : {_TS_LABEL}")
+    print(f"  Languages supported  : C, C++, Python, Java, Go, Rust, JS, TS, PHP, Ruby, C#, Kotlin, Swift, Scala")
     print(f"  SCA findings         : {len(sca_findings)} CVEs in dependencies")
     print(f"  License issues       : {len(license_findings)}")
     print(f"  Snippet matches      : {len(snippet_matches)}")

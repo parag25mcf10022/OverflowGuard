@@ -1,8 +1,8 @@
 #!/bin/bash
-# setup.sh — One-shot environment bootstrap for OverflowGuard v8.1
+# setup.sh — One-shot environment bootstrap for OverflowGuard v9.0
 set -e
 
-echo "🛡️  Configuring OverflowGuard v8.1 Environment..."
+echo "🛡️  Configuring OverflowGuard v9.0 Environment..."
 echo ""
 
 # ── System dependencies ───────────────────────────────────────────────────────
@@ -60,6 +60,8 @@ echo ""
 echo "    Run tests:"
 echo "      python3 -m pytest tests/ -v"
 echo ""
+echo "    Optional — install tree-sitter for real AST parsing (14 languages):"
+echo "      pip install tree-sitter-languages"
 echo "    Optional — install ML / symbolic extras:"
 echo "      pip install scikit-learn z3-solver"
 echo "    Optional — install angr concolic engine (~1 GB):"
