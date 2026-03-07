@@ -1,8 +1,8 @@
 #!/bin/bash
-# setup.sh — One-shot environment bootstrap for OverflowGuard v6.0
+# setup.sh — One-shot environment bootstrap for OverflowGuard v7.1
 set -e
 
-echo "🛡️  Configuring OverflowGuard v6.0 Environment..."
+echo "🛡️  Configuring OverflowGuard v7.1 Environment..."
 echo ""
 
 # ── System dependencies ───────────────────────────────────────────────────────
@@ -11,6 +11,8 @@ sudo apt-get update -qq
 sudo apt-get install -y \
     gcc g++ \
     cppcheck clang-tidy \
+    clang llvm \
+    afl++ bear \
     golang-go \
     rustc cargo \
     openjdk-17-jdk \
@@ -38,6 +40,7 @@ echo "[i] Facebook Infer is optional. Install from: https://fbinfer.com/docs/get
 
 # ── Project directories ───────────────────────────────────────────────────────
 mkdir -p results
+mkdir -p ~/.overflowguard          # trusted ML model store (ml_filter.py)
 
 # ── Environment file ──────────────────────────────────────────────────────────
 if [ ! -f .env ]; then
@@ -56,3 +59,8 @@ echo "      python3 main.py"
 echo ""
 echo "    Run tests:"
 echo "      python3 -m pytest tests/ -v"
+echo ""
+echo "    Optional — install ML / symbolic extras:"
+echo "      pip install scikit-learn z3-solver"
+echo "    Optional — install angr concolic engine (~1 GB):"
+echo "      pip install angr"

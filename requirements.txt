@@ -19,7 +19,7 @@ flawfinder==2.0.19
 requests==2.31.0
 click==8.1.7
 
-# ── v7.0 optional advanced-analysis dependencies ─────────────────────────────
+# ── v7.1 optional advanced-analysis dependencies ─────────────────────────────
 # These are gracefully skipped when not installed; the tool still works.
 
 # symbolic_check.py  — Z3 SMT solver (enables symbolic range-propagation)

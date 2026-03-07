@@ -26,7 +26,7 @@ from llvm_analyzer import LLVMAnalyzer
 from concolic_fuzzer import ConcolicFuzzer
 
 # Shared singletons (created once per process)
-_CACHE    = CacheManager(version="7.0")
+_CACHE    = CacheManager(version="7.1")
 _ML       = MLFilter()
 _CALL_DB  = CallSummaryDB()
 
@@ -42,7 +42,7 @@ except ImportError:
 # --- CONFIGURATION ---
 RESEARCHER_NAME = "Parag Bagade"
 GITHUB_REPO_URL = "https://github.com/parag25mcf10022/OverflowGuard"
-VERSION = "v7.0"
+VERSION = "v7.1"
 
 class AuditManager:
     def __init__(self, target_input):
