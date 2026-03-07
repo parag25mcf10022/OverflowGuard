@@ -1,8 +1,8 @@
-# 🛡️ OverflowGuard v5.3
+# 🛡️ OverflowGuard v6.0
 
 **Lead Researcher:** Parag Bagade  
 **GitHub:** [parag25mcf10022/OverflowGuard](https://github.com/parag25mcf10022/OverflowGuard)  
-**Status:** Production Ready — v5.3 (AST + cppcheck + clang-tidy Edition)
+**Status:** Production Ready — v6.0 (AST + cppcheck + clang-tidy Edition)
 
 ---
 
