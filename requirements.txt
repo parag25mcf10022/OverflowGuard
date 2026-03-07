@@ -1,7 +1,21 @@
-# Static Analysis Engine
+# Core dependencies
+colorama>=0.4.6
+
+# AST-based analysis (libclang Python bindings)
+# Requires the libclang shared library; installs automatically on most systems
+libclang>=18.1.1
+
+# Python SAST (used by audit_python)
+bandit>=1.7.0
+
+# Testing
+pytest>=7.0
+
+# Optional extras
 flawfinder==2.0.19
 requests==2.31.0
-
-# Optional: For better CLI formatting if you expand the UI
 click==8.1.7
-colorama==0.4.6
+
+# External tools (install via OS package manager, not pip):
+#   cppcheck  — sudo apt install cppcheck
+#   clang-tidy — sudo apt install clang-tidy

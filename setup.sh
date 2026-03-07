@@ -1,27 +1,51 @@
 #!/bin/bash
-echo "🛡️  Configuring Polyglot Overflow Guard v5.2 Environment..."
+# setup.sh — One-shot environment bootstrap for OverflowGuard v5.3
+set -e
 
-# Update and install System Toolchains
-sudo apt update
-sudo apt install -y gcc g++ flawfinder python3-pip golang-go rustc cargo openjdk-17-jdk
+echo "🛡️  Configuring OverflowGuard v5.3 Environment..."
+echo ""
 
-# Install Python Security Dependencies
-# Using --break-system-packages for modern Debian-based distros (Parrot/Kali)
-pip3 install colorama bandit --break-system-packages
+# ── System dependencies ───────────────────────────────────────────────────────
+echo "[*] Installing system toolchains..."
+sudo apt-get update -qq
+sudo apt-get install -y \
+    gcc g++ \
+    cppcheck clang-tidy \
+    golang-go \
+    rustc cargo \
+    openjdk-17-jdk \
+    python3-pip python3-venv
 
-# Configure Rust Security Components
-if command -v rustup &> /dev/null
-	then
-	echo "[*] Adding Rust Clippy component..."
-	rustup component add clippy
-	else
-		echo "[!] rustup not found, attempting to install clippy via apt..."
-		sudo apt install -y clippy
-		fi
-		
-		# Create necessary project directories
-		mkdir -p results
-		mkdir -p samples
-		
-		echo -e "\n[✔] Environment configured successfully."
-		echo "[*] You can now run the tool using: python3 main.py"
+# ── Rust Clippy ───────────────────────────────────────────────────────────────
+if command -v rustup &> /dev/null; then
+    echo "[*] Adding Rust Clippy component..."
+    rustup component add clippy
+fi
+
+# ── Python virtual environment ────────────────────────────────────────────────
+echo "[*] Creating Python virtual environment (.venv)..."
+python3 -m venv .venv
+echo "[*] Installing Python dependencies..."
+.venv/bin/pip install --upgrade pip -q
+.venv/bin/pip install -r requirements.txt -q
+
+# ── Project directories ───────────────────────────────────────────────────────
+mkdir -p results
+
+# ── Environment file ──────────────────────────────────────────────────────────
+if [ ! -f .env ]; then
+    cp .env.example .env
+    echo "[*] Created .env from .env.example — edit it to customise settings."
+fi
+
+echo ""
+echo "[✔] Setup complete."
+echo ""
+echo "    Activate the environment:"
+echo "      source .venv/bin/activate"
+echo ""
+echo "    Run a scan:"
+echo "      python3 main.py"
+echo ""
+echo "    Run tests:"
+echo "      python3 -m pytest tests/ -v"

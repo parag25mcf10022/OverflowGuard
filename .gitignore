@@ -1,6 +1,47 @@
-# .gitignore
+# ── Compiled binaries (generated during audits) ──────────────────────────────
+temp_bin
 temp_audit_bin
-audit_report.json
-venv/
+*.o
+*.out
+a.out
+
+# ── Python ────────────────────────────────────────────────────────────────────
 __pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# ── Virtual environments ──────────────────────────────────────────────────────
+.venv/
+venv/
+env/
+ENV/
+
+# ── Test & coverage artefacts ─────────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.log
+
+# ── Generated reports (large; regenerate locally with python3 main.py) ────────
 results/
+audit_report.json
+
+# ── Secrets / environment ─────────────────────────────────────────────────────
+.env
+# Keep the template so contributors know what vars to set:
+!.env.example
+
+# ── Editor & OS noise ─────────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
