@@ -8,6 +8,9 @@ libclang>=18.1.1
 # Python SAST (used by audit_python)
 bandit>=1.7.0
 
+# Multi-language SAST (used by static_tools.py via semgrep wrapper)
+semgrep>=1.60.0
+
 # Testing
 pytest>=7.0
 
@@ -17,5 +20,6 @@ requests==2.31.0
 click==8.1.7
 
 # External tools (install via OS package manager, not pip):
-#   cppcheck  — sudo apt install cppcheck
+#   cppcheck   — sudo apt install cppcheck
 #   clang-tidy — sudo apt install clang-tidy
+#   infer      — https://github.com/facebook/infer/releases (optional)

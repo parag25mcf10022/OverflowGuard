@@ -10,6 +10,7 @@ import html as html_module
 
 from ast_analyzer import ASTAnalyzer, CLANG_AVAILABLE
 from static_tools  import run_all as run_static_tools, is_available
+from taint_analyzer import TaintAnalyzer
 
 
 init(autoreset=True)
@@ -23,6 +24,7 @@ except ImportError:
 # --- CONFIGURATION ---
 RESEARCHER_NAME = "Parag Bagade"
 GITHUB_REPO_URL = "https://github.com/parag25mcf10022/OverflowGuard"
+VERSION = "v6.0"
 
 class AuditManager:
     def __init__(self, target_input):
@@ -87,11 +89,26 @@ class AuditManager:
         """Automated Fuzzing Engine to stress-test target binaries/scripts"""
         print(f"{Fore.BLUE}[*] Launching Automated Fuzzer on {os.path.basename(file_path)}...")
         fuzz_payloads = [
-            "A" * 2048,                          # Buffer Overflow
-            "%x %s %p %n" * 8,                   # Format String
-            "'; whoami; cat /etc/passwd; '",     # Command Injection
-            str(2147483647 + 1),                 # Integer Wrap
-            "\x00\xff\x00\xff" * 10              # Binary/Null Injection
+            "A" * 2048,                                  # Buffer Overflow
+            "A" * 512,                                   # Medium overflow
+            "%x %s %p %n" * 8,                           # Format String
+            "%08x." * 40,                                # Format string leak
+            "'; whoami; cat /etc/passwd; '",             # Command Injection
+            "`id`",                                      # Backtick injection
+            "$(cat /etc/passwd)",                        # $() injection
+            str(2147483647 + 1),                         # Integer Overflow wrap
+            str(-1),                                     # Negative index
+            str(0),                                      # Zero / div-by-zero
+            "\x00" * 100,                               # Null byte injection
+            "\x00\xff\x00\xff" * 10,                    # Binary injection
+            "../../../etc/passwd",                       # Path traversal
+            "..\\..\\..\\windows\\system32\\drivers\\etc\\hosts",  # Windows traversal
+            "' OR '1'='1",                               # SQL injection
+            "1; DROP TABLE users;",                      # SQL injection 2
+            "<script>alert(1)</script>",                 # XSS
+            "\n" * 1000,                                 # Line flood
+            "x" * 65536,                                 # Large input
+            "\r\n" * 500,                                # CRLF injection
         ]
         
         for payload in fuzz_payloads:
@@ -283,8 +300,7 @@ class AuditManager:
 <div class="header">
   <h1>🛡️ OverflowGuard — {html_module.escape(self.output_base_name.upper())}</h1>
   <p class="meta">
-    Researcher: <b style="color:#eee;">{html_module.escape(RESEARCHER_NAME)}</b> &nbsp;|
-    Scan date: {self.scan_date} &nbsp;|
+    Researcher: <b style="color:#eee;">{html_module.escape(RESEARCHER_NAME)}</b> &nbsp;|    Version: <b style="color:#bb86fc;">{VERSION}</b> &nbsp;|    Scan date: {self.scan_date} &nbsp;|
     <a href="{GITHUB_REPO_URL}">GitHub Repo</a>
   </p>
 </div>
@@ -349,7 +365,7 @@ class AuditManager:
         # ── header ───────────────────────────────────────────────────────────
         print()
         hline("═")
-        title = "📊  OVERFLOW GUARD — FINAL AUDIT SCORECARD  (v5.3)"
+        title = f"📊  OVERFLOW GUARD — FINAL AUDIT SCORECARD  ({VERSION})"
         print(f"{Fore.CYAN}{title.center(W)}{Style.RESET_ALL}")
         print(f"{Fore.WHITE}{self.scan_date.center(W)}{Style.RESET_ALL}")
         hline("═")
@@ -473,6 +489,16 @@ def audit_cpp(file_path, audit_obj):
                               snippet_override=af.snippet,
                               note_override=af.note)
 
+    # --- Stage 1b: Taint analysis ---
+    taint_findings = TaintAnalyzer().analyze(file_path)
+    for tf in taint_findings:
+        print(f"{Fore.RED}[!!!] Taint [{tf.confidence}] {tf.issue_type} "
+              f"@ line {tf.line} — {tf.note}")
+        audit_obj.add_finding(file_path, "Taint", tf.issue_type,
+                              line_override=tf.line,
+                              snippet_override=tf.snippet,
+                              note_override=tf.note)
+
     # --- Stage 2: cppcheck + clang-tidy ---
     tool_findings = run_static_tools(file_path)
     for tf in tool_findings:
@@ -520,7 +546,18 @@ def audit_cpp(file_path, audit_obj):
     if os.path.exists(out_bin): os.remove(out_bin)
 
 def audit_python(file_path, audit_obj):
-    print(f"{Fore.YELLOW}[*] Running Bandit SAST & Automated Fuzzer on Python file...")
+    print(f"{Fore.YELLOW}[*] Running Bandit SAST, Taint Analysis & Fuzzer on Python file...")
+
+    # --- Taint analysis ---
+    taint_findings = TaintAnalyzer().analyze(file_path)
+    for tf in taint_findings:
+        print(f"{Fore.RED}[!!!] Taint [{tf.confidence}] {tf.issue_type} "
+              f"@ line {tf.line} — {tf.note}")
+        audit_obj.add_finding(file_path, "Taint", tf.issue_type,
+                              line_override=tf.line,
+                              snippet_override=tf.snippet,
+                              note_override=tf.note)
+
     crashed, _ = audit_obj.run_fuzzer(["python3", file_path], file_path)
     if crashed:
         print(f"{Fore.RED}[!!!] FUZZER CRASH: Python script failed on malicious input.")
@@ -551,27 +588,47 @@ def audit_python(file_path, audit_obj):
 
 
 _BANDIT_MAP = {
+    # OS / Command injection
     "B102": "os-injection",
     "B103": "os-injection",
     "B104": "os-injection",
+    "B108": "insecure-temp-file",
+    "B306": "insecure-temp-file",
+    "B601": "os-command-injection",
+    "B602": "os-command-injection",
+    "B603": "os-command-injection",
+    "B604": "os-command-injection",
+    "B605": "os-command-injection",
+    "B607": "os-command-injection",
+    # Hardcoded secrets
     "B105": "hardcoded-password",
     "B106": "hardcoded-password",
     "B107": "hardcoded-password",
-    "B108": "os-injection",
+    # Deserialization
     "B301": "insecure-deserialization",
     "B302": "insecure-deserialization",
-    "B303": "insecure-deserialization",
-    "B304": "insecure-deserialization",
-    "B306": "os-injection",
+    "B303": "weak-crypto",
+    "B304": "weak-crypto",
+    "B305": "weak-crypto",
+    "B324": "weak-crypto",
+    # Eval
     "B307": "insecure-eval",
     "B322": "insecure-eval",
-    "B501": "os-injection",
-    "B601": "os-injection",
-    "B602": "os-injection",
-    "B603": "os-injection",
-    "B604": "os-injection",
-    "B605": "os-injection",
-    "B607": "os-injection",
+    # Crypto weak
+    "B311": "weak-rng",
+    "B323": "insecure-tls",
+    "B501": "insecure-tls",
+    "B502": "insecure-tls",
+    "B503": "insecure-tls",
+    "B504": "insecure-tls",
+    "B505": "weak-crypto",
+    "B506": "insecure-deserialization",  # yaml.load
+    # SQL
+    "B608": "sql-injection",
+    # Path traversal
+    "B101": "insecure-config",  # assert used for security
+    "B110": "insecure-config",  # try/except pass
+    "B404": "os-command-injection",  # import subprocess
 }
 
 
@@ -579,25 +636,73 @@ def _bandit_map(test_id: str) -> str:
     return _BANDIT_MAP.get(test_id, "os-injection")
 
 def audit_go(file_path, audit_obj):
-    print(f"{Fore.YELLOW}[*] Running Go Race Detector & Fuzzer...")
+    print(f"{Fore.YELLOW}[*] Running Go Race Detector, Taint Analysis & Fuzzer...")
+
+    # Taint analysis
+    taint_findings = TaintAnalyzer().analyze(file_path)
+    for tf in taint_findings:
+        print(f"{Fore.RED}[!!!] Taint [{tf.confidence}] {tf.issue_type} "
+              f"@ line {tf.line} — {tf.note}")
+        audit_obj.add_finding(file_path, "Taint", tf.issue_type,
+                              line_override=tf.line,
+                              snippet_override=tf.snippet,
+                              note_override=tf.note)
+
     crashed, _ = audit_obj.run_fuzzer(["go", "run", "-race", file_path], file_path)
     if crashed:
         print(f"{Fore.RED}[!!!] Dynamic: GO Logic/Race failure confirmed.")
         audit_obj.add_finding(file_path, "Fuzzing", "race-condition")
 
 def audit_rust(file_path, audit_obj):
-    print(f"{Fore.YELLOW}[*] Running Rust Safety Audit...")
+    print(f"{Fore.YELLOW}[*] Running Rust Safety Audit & Taint Analysis...")
+
+    # Taint analysis
+    taint_findings = TaintAnalyzer().analyze(file_path)
+    for tf in taint_findings:
+        print(f"{Fore.RED}[!!!] Taint [{tf.confidence}] {tf.issue_type} "
+              f"@ line {tf.line} — {tf.note}")
+        audit_obj.add_finding(file_path, "Taint", tf.issue_type,
+                              line_override=tf.line,
+                              snippet_override=tf.snippet,
+                              note_override=tf.note)
+
     with open(file_path, 'r') as f:
-        if "unsafe" in f.read():
-            print(f"{Fore.RED}[!!!] Static: Potential UNSAFE-BLOCK detected.")
-            audit_obj.add_finding(file_path, "Static", "unsafe-block")
+        content = f.read()
+    if "unsafe" in content:
+        print(f"{Fore.RED}[!!!] Static: Potential UNSAFE-BLOCK detected.")
+        audit_obj.add_finding(file_path, "Static", "unsafe-block")
+    if "mem::transmute" in content:
+        print(f"{Fore.RED}[!!!] Static: mem::transmute() — extremely unsafe type cast.")
+        audit_obj.add_finding(file_path, "Static", "unsafe-block",
+                              note_override="mem::transmute found — reinterprets bits without safety")
 
 def audit_java(file_path, audit_obj):
-    print(f"{Fore.YELLOW}[*] Static Analyzing Java patterns...")
+    print(f"{Fore.YELLOW}[*] Static Analyzing Java patterns + Taint Analysis...")
+
+    # Taint analysis
+    taint_findings = TaintAnalyzer().analyze(file_path)
+    for tf in taint_findings:
+        print(f"{Fore.RED}[!!!] Taint [{tf.confidence}] {tf.issue_type} "
+              f"@ line {tf.line} — {tf.note}")
+        audit_obj.add_finding(file_path, "Taint", tf.issue_type,
+                              line_override=tf.line,
+                              snippet_override=tf.snippet,
+                              note_override=tf.note)
+
     with open(file_path, 'r') as f:
-        if "ObjectInputStream" in f.read():
-            print(f"{Fore.RED}[!!!] Static: INSECURE-DESERIALIZATION pattern found.")
-            audit_obj.add_finding(file_path, "Static", "insecure-deserialization")
+        content = f.read()
+    if "ObjectInputStream" in content:
+        print(f"{Fore.RED}[!!!] Static: INSECURE-DESERIALIZATION pattern found.")
+        audit_obj.add_finding(file_path, "Static", "insecure-deserialization")
+    if re.search(r'Runtime\.getRuntime\(\)\.exec', content):
+        print(f"{Fore.RED}[!!!] Static: Runtime.exec() — command injection risk.")
+        audit_obj.add_finding(file_path, "Static", "os-command-injection")
+    if re.search(r'getInstance\s*\(\s*["\'](?:MD5|SHA1|DES|RC4)["\']', content):
+        print(f"{Fore.RED}[!!!] Static: Weak crypto algorithm detected.")
+        audit_obj.add_finding(file_path, "Static", "weak-crypto")
+    if re.search(r'new\s+Random\s*\(', content):
+        print(f"{Fore.YELLOW}[!] Static: java.util.Random is not cryptographically secure.")
+        audit_obj.add_finding(file_path, "Static", "weak-rng")
 
 def analyze_file(file_path, audit_obj):
     audit_obj.stats["scanned"] += 1
@@ -610,7 +715,7 @@ def analyze_file(file_path, audit_obj):
     elif ext == ".java": audit_java(file_path, audit_obj)
 
 if __name__ == "__main__":
-    print(f"{Fore.CYAN}🛡️  OVERFLOW GUARD v5.3 | Researcher: {RESEARCHER_NAME}")
+    print(f"\n{Fore.CYAN}🛡️  OVERFLOW GUARD {VERSION} | Researcher: {RESEARCHER_NAME}")
     path_input = input("Enter Path/File: ").strip()
     if not os.path.exists(path_input):
         print(f"{Fore.RED}[x] Path does not exist!"); sys.exit(1)

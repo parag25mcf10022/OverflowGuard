@@ -27,12 +27,22 @@ SINK_FUNCTIONS = {
     "vsprintf":  "stack-buffer-overflow",
     "gets":      "stack-buffer-overflow",
     "scanf":     "stack-buffer-overflow",
+    "sscanf":    "stack-buffer-overflow",
+    "fscanf":    "stack-buffer-overflow",
     "memcpy":    "buffer-overflow",
     "memmove":   "buffer-overflow",
+    "strncat":   "stack-buffer-overflow",   # size arg is remaining space, not dest size
+    "strncpy":   "stack-buffer-overflow",   # does NOT guarantee NUL termination
+    "tmpnam":    "insecure-temp-file",
+    "tempnam":   "insecure-temp-file",
+    "mktemp":    "insecure-temp-file",
+    "system":    "os-command-injection",
+    "popen":     "os-command-injection",
+    "rand":      "weak-rng",
 }
 
-HEAP_ALLOC_FUNCTIONS = {"malloc", "calloc", "realloc"}
-FREE_FUNCTIONS       = {"free"}
+HEAP_ALLOC_FUNCTIONS = {"malloc", "calloc", "realloc", "xmalloc", "zmalloc"}
+FREE_FUNCTIONS       = {"free", "xfree", "zfree"}
 
 # ---------------------------------------------------------------------------
 # Data class for a single finding
@@ -86,7 +96,8 @@ class ASTAnalyzer:
     # ------------------------------------------------------------------
     # libclang-based walk
     # ------------------------------------------------------------------
-    def _walk(self, node, heap_vars: set, freed_vars: set):
+    def _walk(self, node, heap_vars: set, freed_vars: set,
+              malloc_lines: list):
         """Recursively walk the translation unit cursor."""
         if node.kind == cindex.CursorKind.VAR_DECL:
             # Track variables initialised with malloc/calloc/realloc
@@ -94,6 +105,16 @@ class ASTAnalyzer:
                 if (child.kind == cindex.CursorKind.CALL_EXPR and
                         child.spelling in HEAP_ALLOC_FUNCTIONS):
                     heap_vars.add(node.spelling)
+                    ln = node.location.line
+                    # Check for multiplication in alloc size → int overflow risk
+                    call_tokens = list(child.get_tokens())
+                    raw = " ".join(t.spelling for t in call_tokens)
+                    if "*" in raw:
+                        self._add("integer-overflow", ln, node.location.column,
+                                  "HIGH",
+                                  "Alloc size uses '*' — integer overflow may produce undersized allocation")
+                    # Track malloc lines to flag unchecked returns
+                    malloc_lines.append((node.spelling, ln))
 
         if node.kind == cindex.CursorKind.CALL_EXPR:
             fn = node.spelling or ""
@@ -136,12 +157,17 @@ class ASTAnalyzer:
                                   node.location.column, "HIGH",
                                   "printf() format arg is a variable, not a literal")
 
-            # ---- free() → record pointer name ----
+            # ---- free() → record pointer name, flag double-free ----
             elif fn in FREE_FUNCTIONS:
                 if args:
                     toks = list(args[0].get_tokens())
                     if toks:
-                        freed_vars.add(toks[0].spelling)
+                        ptr_name = toks[0].spelling
+                        if ptr_name in freed_vars:
+                            self._add("double-free", node.location.line,
+                                      node.location.column, "HIGH",
+                                      f"double-free: free() called on '{ptr_name}' which was already freed")
+                        freed_vars.add(ptr_name)
 
         # ---- Use of a freed pointer ----
         if node.kind in (cindex.CursorKind.DECL_REF_EXPR,
@@ -152,8 +178,16 @@ class ASTAnalyzer:
                           node.location.column, "HIGH",
                           f"Pointer '{node.spelling}' used after free()")
 
+        # ---- off-by-one: loop using <= against buffer size ----
+        if node.kind == cindex.CursorKind.FOR_STMT:
+            raw_toks = " ".join(t.spelling for t in node.get_tokens())
+            if re.search(r'<=\s*(?:sizeof\s*\(|\d+)', raw_toks):
+                self._add("off-by-one", node.location.line,
+                          node.location.column, "MEDIUM",
+                          "for-loop uses '<=' against sizeof/constant — potential off-by-one")
+
         for child in node.get_children():
-            self._walk(child, heap_vars, freed_vars)
+            self._walk(child, heap_vars, freed_vars, malloc_lines)
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -173,7 +207,8 @@ class ASTAnalyzer:
                              .PARSE_DETAILED_PROCESSING_RECORD))
                 heap_vars: set = set()
                 freed_vars: set = set()
-                self._walk(tu.cursor, heap_vars, freed_vars)
+                malloc_lines: list = []
+                self._walk(tu.cursor, heap_vars, freed_vars, malloc_lines)
             except Exception:
                 # libclang parse error (missing headers, etc.) → fallback
                 self.findings.clear()
@@ -195,11 +230,17 @@ class ASTAnalyzer:
 
         # Dangerous calls
         for pattern, base_issue in [
-            (r"\bstrcpy\s*\(",  "stack-buffer-overflow"),
-            (r"\bstrcat\s*\(",  "stack-buffer-overflow"),
-            (r"\bsprintf\s*\(", "stack-buffer-overflow"),
-            (r"\bvsprintf\s*\(","stack-buffer-overflow"),
-            (r"\bgets\s*\(",    "stack-buffer-overflow"),
+            (r"\bstrcpy\s*\(",   "stack-buffer-overflow"),
+            (r"\bstrcat\s*\(",   "stack-buffer-overflow"),
+            (r"\bstrncat\s*\(",  "stack-buffer-overflow"),
+            (r"\bstrncpy\s*\(",  "stack-buffer-overflow"),
+            (r"\bsprintf\s*\(",  "stack-buffer-overflow"),
+            (r"\bvsprintf\s*\(", "stack-buffer-overflow"),
+            (r"\bgets\s*\(",     "stack-buffer-overflow"),
+            (r"\bsscanf\s*\(",   "stack-buffer-overflow"),
+            (r"\bfscanf\s*\(",   "stack-buffer-overflow"),
+            (r"\b(tmpnam|tempnam|mktemp)\s*\(", "insecure-temp-file"),
+            (r"\b(system|popen)\s*\(",          "os-command-injection"),
         ]:
             for m in re.finditer(pattern, src):
                 ln = src[:m.start()].count("\n") + 1
@@ -235,18 +276,60 @@ class ASTAnalyzer:
                 snippet=self._snippet(ln), confidence="MEDIUM",
                 note="Regex: printf() variable format string"))
 
-        # Use-after-free: free(ptr) … use of ptr
+        # Use-after-free and double-free: free(ptr) analysis
+        freed_positions: dict = {}
         for m in re.finditer(r"\bfree\s*\(\s*([a-zA-Z_]\w*)\s*\)", src):
             ptr = m.group(1)
             free_line = src[:m.start()].count("\n") + 1
-            rest = src[m.end():]
-            use_m = re.search(r'\b' + re.escape(ptr) + r'\b', rest)
-            if use_m:
-                use_line = free_line + rest[:use_m.start()].count("\n")
+            if ptr in freed_positions:
+                # double-free detected
                 findings.append(ASTFinding(
-                    issue_type="use-after-free", line=use_line, col=0,
-                    snippet=self._snippet(use_line), confidence="HIGH",
-                    note=f"Regex: '{ptr}' used after free()"))
+                    issue_type="double-free", line=free_line, col=0,
+                    snippet=self._snippet(free_line), confidence="HIGH",
+                    note=f"Regex: double-free of '{ptr}' (also freed at line {freed_positions[ptr]})"))
+            else:
+                freed_positions[ptr] = free_line
+                rest = src[m.end():]
+                use_m = re.search(r'\b' + re.escape(ptr) + r'\b', rest)
+                if use_m:
+                    use_line = free_line + rest[:use_m.start()].count("\n")
+                    findings.append(ASTFinding(
+                        issue_type="use-after-free", line=use_line, col=0,
+                        snippet=self._snippet(use_line), confidence="HIGH",
+                        note=f"Regex: '{ptr}' used after free()"))
+
+        # Off-by-one: loop using <= against sizeof or numeric constant
+        for m in re.finditer(
+                r'for\s*\([^;]*;[^;]*<=\s*(?:sizeof\s*\([^)]+\)|[0-9]+)\s*;', src):
+            ln = src[:m.start()].count("\n") + 1
+            findings.append(ASTFinding(
+                issue_type="off-by-one", line=ln, col=0,
+                snippet=self._snippet(ln), confidence="MEDIUM",
+                note="Regex: for-loop '<=' against sizeof/constant — potential off-by-one"))
+
+        # Integer overflow in malloc size (multiplication)
+        for m in re.finditer(
+                r'\b(malloc|calloc|realloc)\s*\(\s*[^)]*\*[^)]*\)', src):
+            ln = src[:m.start()].count("\n") + 1
+            findings.append(ASTFinding(
+                issue_type="integer-overflow", line=ln, col=0,
+                snippet=self._snippet(ln), confidence="HIGH",
+                note="Regex: alloc size uses multiplication — integer overflow risk"))
+
+        # NULL pointer: malloc return used without check
+        for m in re.finditer(
+                r'([a-zA-Z_]\w*)\s*=\s*(?:malloc|calloc|realloc)\s*\([^)]+\)\s*;', src):
+            ptr = m.group(1)
+            alloc_line = src[:m.start()].count("\n") + 1
+            rest = src[m.end():m.end()+300]
+            # If pointer is used without a NULL check nearby
+            if not re.search(r'if\s*\(\s*' + re.escape(ptr) + r'\s*(?:==\s*NULL|!=\s*NULL)', rest):
+                use_m = re.search(r'\b' + re.escape(ptr) + r'\b', rest)
+                if use_m:
+                    findings.append(ASTFinding(
+                        issue_type="null-pointer", line=alloc_line, col=0,
+                        snippet=self._snippet(alloc_line), confidence="MEDIUM",
+                        note=f"Regex: allocation result '{ptr}' not checked for NULL before use"))
 
         return self._dedup(findings)
 
