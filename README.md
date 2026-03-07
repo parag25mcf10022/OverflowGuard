@@ -1,8 +1,8 @@
-# 🛡️ OverflowGuard v8.0
+# 🛡️ OverflowGuard v8.1
 
 **Lead Researcher:** Parag Bagade  
 **GitHub:** [parag25mcf10022/OverflowGuard](https://github.com/parag25mcf10022/OverflowGuard)  
-**Status:** Production Ready — v8.0 (SAST + SCA + Secrets + SBOM + SARIF — Full Supply-Chain Security Edition)
+**Status:** Production Ready — v8.1 (SAST + SCA + Secrets + SBOM + SARIF + GitHub Repo Scanning)
 
 ![CI](https://github.com/parag25mcf10022/OverflowGuard/actions/workflows/ci.yml/badge.svg)
 
@@ -26,8 +26,9 @@ Unlike surface-level scanners, it combines **twelve independent analysis stages*
 | 1h — Concurrency | `concurrency_analyzer.py` | C/C++, Go |
 | 2a — External SAST | cppcheck + clang-tidy + semgrep + Infer + LLVM | C/C++, Python, Java |
 | 2b — Concolic Fuzzing | `concolic_fuzzer.py` (angr → AFL++ → ASAN) | C/C++ |
-| **3 — SCA** | **`sca_scanner.py` (OSV API)** | **All manifest formats** |
-| **4 — Secrets Scan** | **`secrets_scanner.py` (30+ patterns + entropy)** | **All source + config files** |
+| 3 — SCA | `sca_scanner.py` (OSV API) | All manifest formats |
+| 4 — Secrets Scan | `secrets_scanner.py` (30+ patterns + entropy) | All source + config files |
+| **★ GitHub** | **`github_scanner.py` (clone or Contents API)** | **Any public or private GitHub repo** |
 
 Output formats: **HTML dashboard**, **SARIF 2.1.0** (GitHub Code Scanning / Azure DevOps), **CycloneDX 1.4 SBOM**.
 
@@ -35,7 +36,8 @@ Output formats: **HTML dashboard**, **SARIF 2.1.0** (GitHub Code Scanning / Azur
 
 ## ✨ Features
 
-- **SCA — dependency vulnerability scanning** (`sca_scanner.py`) — parses `requirements.txt`, `pyproject.toml`, `Pipfile`, `package.json`, `Cargo.toml`, `go.mod`, `pom.xml`, `build.gradle`; queries the [OSV API](https://osv.dev) (free, no key) for known CVEs; includes fix-version in every finding; auto-remediation messages show the exact safe upgrade path (e.g. *“Upgrade requests 2.27.0 → 2.31.0 to fix CVE-2023-32681”*)
+- **GitHub repository scanning** (`github_scanner.py`) — scan **any GitHub repo directly** by entering a URL (`https://github.com/owner/repo`), SSH URL (`git@github.com:owner/repo.git`), or shorthand (`owner/repo` or `owner/repo@branch`) at the prompt; automatically shallow-clones with `git` (preferred) or falls back to the GitHub Contents API (no git required); fetches repo metadata (stars, forks, language, licence, topics); supports private repos via `GITHUB_TOKEN` env var; cleans up the temp clone automatically after the scan; the entire 6-stage pipeline (SAST + SCA + secrets + SBOM + SARIF) runs on the downloaded code unchanged
+- **SCA — dependency vulnerability scanning** (`sca_scanner.py`) — parses `requirements.txt`, `pyproject.toml`, `Pipfile`, `package.json`, `Cargo.toml`, `go.mod`, `pom.xml`, `build.gradle`; queries the [OSV API](https://osv.dev) for known CVEs; auto-remediation messages show the exact safe upgrade path
 - **License compliance** — detects GPL / LGPL / AGPL / SSPL / EUPL / MPL / CDDL licences in dependencies that could “infect” proprietary code; rated HIGH (GPL/AGPL/SSPL), MEDIUM (LGPL/MPL); remediation guidance included
 - **OSS snippet matching** — SHA-256 fingerprints every source file and looks up known open-source code signatures so copyleft code can be detected even without a package manifest
 - **Secrets / credentials scanner** (`secrets_scanner.py`) — 30+ regex patterns covering AWS access keys, GitHub tokens (ghp\_/gho\_/ghu\_/ghs\_), Google API keys, Slack tokens + webhooks, Stripe live/test keys, Twilio SIDs, SendGrid/NPM/PyPI API tokens, PEM private keys (RSA/EC/OpenSSH/PGP), JWT tokens, database connection strings, hardcoded password assignments, Azure storage keys, and Basic-Auth-in-URL; backs each pattern hit with Shannon entropy analysis; suppresses test fixtures and placeholder values
@@ -113,6 +115,26 @@ chmod +x setup.sh && ./setup.sh
 ---
 
 ## ▶️ Usage
+
+### Scan a GitHub repository (any public repo or private with token)
+
+```bash
+source .venv/bin/activate
+python3 main.py
+# When prompted: Enter Path/File/GitHub Repo: torvalds/linux
+# ...or a full URL:
+# Enter Path/File/GitHub Repo: https://github.com/pallets/flask
+# ...or a specific branch:
+# Enter Path/File/GitHub Repo: pallets/flask@main
+```
+
+For **private repos** or to avoid the 60 req/hr unauthenticated rate limit:
+
+```bash
+export GITHUB_TOKEN=ghp_your_token_here
+python3 main.py
+# Enter Path/File/GitHub Repo: your-org/private-repo
+```
 
 ### Scan a single file
 
@@ -291,7 +313,8 @@ The repository ships with a **GitHub Actions** workflow (`.github/workflows/ci.y
 
 | Version | Date | Highlights |
 |---|---|---|
-| **v8.0** | 2026-03-07 | `sca_scanner.py` (OSV API, 7 manifest formats, license compliance, snippet matching); `secrets_scanner.py` (30+ patterns + Shannon entropy); `sbom_generator.py` (CycloneDX 1.4 JSON); `sarif_output.py` (SARIF 2.1.0 — GitHub Code Scanning native); 6-stage pipeline; zero new pip dependencies |
+| **v8.1** | 2026-03-07 | `github_scanner.py` — scan any GitHub repo by URL/shorthand; git-clone + Contents API fallback; private repo support via GITHUB_TOKEN; full 6-stage pipeline runs on downloaded code |
+| **v8.0** | 2026-03-07 | `sca_scanner.py` (OSV API, 7 manifest formats); `secrets_scanner.py` (30+ patterns + entropy); `sbom_generator.py` (CycloneDX 1.4); `sarif_output.py` (SARIF 2.1.0); 6-stage pipeline |
 | **v7.1** | 2026-03-07 | Smart directory scanning (skip `.venv/`, `site-packages/`); SQL f-string fix; safer pickle loading |
 | **v7.0** | 2026-03 | 10 new advanced-analysis modules; 8-stage pipeline; persistent scan cache; ML false-positive filter |
 | **v6.0** | 2026-02 | Multi-language taint (Go, Rust, Java), semgrep, Infer, GitHub Actions CI, HTML dashboard |

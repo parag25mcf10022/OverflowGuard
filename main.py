@@ -31,8 +31,11 @@ from sarif_output import generate_sarif
 from secrets_scanner import run_secrets_scan
 from sbom_generator import generate_sbom
 
+# ── v8.1 GitHub repository scanner ─────────────────────────────────────────
+from github_scanner import fetch_repo, is_github_input, parse_repo_input
+
 # Shared singletons (created once per process)
-_CACHE    = CacheManager(version="8.0")
+_CACHE    = CacheManager(version="8.1")
 _ML       = MLFilter()
 _CALL_DB  = CallSummaryDB()
 
@@ -48,7 +51,7 @@ except ImportError:
 # --- CONFIGURATION ---
 RESEARCHER_NAME = "Parag Bagade"
 GITHUB_REPO_URL = "https://github.com/parag25mcf10022/OverflowGuard"
-VERSION = "v8.0"
+VERSION = "v8.1"
 
 class AuditManager:
     def __init__(self, target_input):
@@ -833,11 +836,52 @@ def analyze_file(file_path, audit_obj):
     elif ext == ".java": audit_java(file_path, audit_obj)
 
 if __name__ == "__main__":
-    print(f"\n{Fore.CYAN}🛡️  OVERFLOW GUARD {VERSION} | Researcher: {RESEARCHER_NAME}")
-    path_input = input("Enter Path/File: ").strip()
-    if not os.path.exists(path_input):
-        print(f"{Fore.RED}[x] Path does not exist!"); sys.exit(1)
-    audit = AuditManager(path_input)
+    print(f"\n{Fore.CYAN}\u26d4  OVERFLOW GUARD {VERSION} | Researcher: {RESEARCHER_NAME}")
+    print(f"{Fore.WHITE}Accepts: local path, local file, GitHub URL, or owner/repo shorthand.")
+    path_input = input("Enter Path/File/GitHub Repo: ").strip()
+
+    # ── Detect whether the input is a GitHub repo reference ───────────────────
+    _gh_context  = None    # holds the live context manager when scanning GitHub
+    _gh_info     = {}      # repo metadata dict
+    _cleanup_dir = None    # temp dir to clean up on error
+
+    if is_github_input(path_input):
+        # Parse branch/token from input before entering context
+        _token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+        if not _token:
+            print(
+                f"{Fore.YELLOW}[i] No GITHUB_TOKEN env var found.  "
+                "Public repos work without a token.  "
+                "Set GITHUB_TOKEN for private repos or to avoid rate limits."
+            )
+        try:
+            _gh_context = fetch_repo(path_input, token=_token)
+            local_path, _gh_info = _gh_context.__enter__()
+        except Exception as _gh_err:
+            print(f"{Fore.RED}[x] GitHub fetch failed: {_gh_err}")
+            sys.exit(1)
+        # Use the local temp dir as the scan root for the rest of the pipeline
+        path_input  = local_path
+        print(
+            f"{Fore.GREEN}[✔] Repo available at: {Fore.WHITE}{local_path}  "
+            f"(strategy: {_gh_info.get('_strategy', '?')})"
+        )
+    elif not os.path.exists(path_input):
+        print(f"{Fore.RED}[x] Path does not exist!  "
+              "(For GitHub repos use: owner/repo or a full GitHub URL)")
+        sys.exit(1)
+
+    # ── Build display name for the report (use repo name if GitHub) ──────────
+    _report_label = (
+        _gh_info.get("full_name", "").replace("/", "_")
+        or path_input
+    )
+    audit = AuditManager(_report_label)
+    audit.output_base_name = (
+        _gh_info.get("full_name", "").replace("/", "_")
+        or os.path.basename(path_input.rstrip(os.sep))
+        or "audit_report"
+    )
 
     # Directories that must never be scanned: virtual-env, caches, VCS, build artefacts
     SKIP_DIRS: set = {
@@ -991,3 +1035,8 @@ if __name__ == "__main__":
     print(f"  Snippet matches      : {len(snippet_matches)}")
     print(f"  Secrets detected     : {len(secrets_findings)}")
     print(f"  SBOM components      : {len(all_deps)} dependencies documented")
+
+    # ── If we used a GitHub context, release it (triggers temp-dir cleanup) ───
+    if _gh_context is not None:
+        _gh_context.__exit__(None, None, None)
+        print(f"{Fore.CYAN}  [GitHub] Temporary clone cleaned up.{Style.RESET_ALL}")
