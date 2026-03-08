@@ -39,7 +39,10 @@ z3-solver>=4.12.0
 
 # ── v9.0 optional advanced-analysis dependencies ─────────────────────────────
 # These are gracefully skipped when not installed; the tool still works.
-
+# ── v10.0 ── No additional pip dependencies ──────────────────────────
+# diff_scanner.py    — uses subprocess (git CLI) — stdlib only
+# remediation_db.py  — pure Python dataclass DB — stdlib only
+# advanced_taint.py  — reuses tree-sitter (already listed above)
 # ml_filter.py       — ML false-positive filter (RandomForest)
 # scikit-learn>=1.3.0
 

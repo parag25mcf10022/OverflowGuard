@@ -1,8 +1,8 @@
 #!/bin/bash
-# setup.sh — One-shot environment bootstrap for OverflowGuard v9.0
+# setup.sh — One-shot environment bootstrap for OverflowGuard v10.0
 set -e
 
-echo "🛡️  Configuring OverflowGuard v9.0 Environment..."
+echo "🛡️  Configuring OverflowGuard v10.0 Environment..."
 echo ""
 
 # ── System dependencies ───────────────────────────────────────────────────────
@@ -13,6 +13,7 @@ sudo apt-get install -y \
     cppcheck clang-tidy \
     clang llvm \
     afl++ bear \
+    git \
     golang-go \
     rustc cargo \
     openjdk-17-jdk \
@@ -35,8 +36,8 @@ echo "[*] Installing Python dependencies..."
 echo "[*] Installing semgrep (multi-language SAST)..."
 .venv/bin/pip install semgrep -q
 
-# ── v9.0: tree-sitter grammars (real AST parsing for 11 languages) ────────────
-echo "[*] Installing tree-sitter + language grammars (v9.0)..."
+# ── v9.0+: tree-sitter grammars (real AST parsing for 11 languages) ───────────
+echo "[*] Installing tree-sitter + language grammars..."
 .venv/bin/pip install -q \
     tree-sitter \
     tree-sitter-c tree-sitter-cpp tree-sitter-python \
@@ -44,8 +45,8 @@ echo "[*] Installing tree-sitter + language grammars (v9.0)..."
     tree-sitter-javascript tree-sitter-typescript \
     tree-sitter-php tree-sitter-ruby tree-sitter-c-sharp
 
-# ── v9.0: Z3 SMT solver (symbolic execution with counterexamples) ─────────────
-echo "[*] Installing Z3 SMT solver (v9.0)..."
+# ── v9.0+: Z3 SMT solver (symbolic execution with counterexamples) ────────────
+echo "[*] Installing Z3 SMT solver..."
 .venv/bin/pip install -q z3-solver
 
 # ── Facebook Infer (optional — manual install required) ───────────────────────
@@ -73,7 +74,7 @@ echo ""
 echo "    Run tests:"
 echo "      python3 -m pytest tests/ -v"
 echo ""
-echo "    v9.0 real analysis engines are installed (tree-sitter + Z3)."
+echo "    v10.0 engines installed (tree-sitter + Z3 + diff scanner + remediation DB + advanced taint)."
 echo ""
 echo "    Optional — install ML false-positive filter:"
 echo "      pip install scikit-learn"

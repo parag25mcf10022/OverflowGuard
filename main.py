@@ -44,8 +44,13 @@ from real_dataflow import RealDataflowAnalyzer, DataflowFinding
 from real_symbolic import RealSymbolicAnalyzer, SymbolicFinding
 from false_positive_filter import FalsePositiveFilter, Finding
 
+# ── v10.0 Differential scanning, Remediation guidance, Advanced taint ────────
+from diff_scanner import DiffScanner, DiffMode, DiffResult, get_changed_files
+from remediation_db import get_remediation, get_cli_hint, get_html_snippet
+from advanced_taint import AdvancedTaintAnalyzer, AdvancedTaintFinding, format_taint_summary
+
 # Shared singletons (created once per process)
-_CACHE    = CacheManager(version="9.0")
+_CACHE    = CacheManager(version="10.0")
 _ML       = MLFilter()
 _CALL_DB  = CallSummaryDB()
 _TS_LABEL = "AST(tree‑sitter)" if TS_AVAILABLE else "AST(regex)"
@@ -62,7 +67,7 @@ except ImportError:
 # --- CONFIGURATION ---
 RESEARCHER_NAME = "Parag Bagade"
 GITHUB_REPO_URL = "https://github.com/parag25mcf10022/OverflowGuard"
-VERSION = "v9.0"
+VERSION = "v10.0"
 
 class AuditManager:
     def __init__(self, target_input):
@@ -304,6 +309,7 @@ class AuditManager:
     <tr><td style="color:#03dac6;font-weight:700;padding:6px 0;border-bottom:1px solid #2a2a2a;">CVSS</td><td style="padding:6px 0;border-bottom:1px solid #2a2a2a;">{html_module.escape(str(f['cvss']))}</td></tr>
     <tr><td style="color:#03dac6;font-weight:700;padding:6px 0;">Remediation</td><td style="padding:6px 0;">{remed}</td></tr>
   </table>
+  {get_html_snippet(f['issue'])}
 </div>"""
 
         html_content = f"""<!DOCTYPE html>
@@ -512,6 +518,32 @@ class AuditManager:
         )
         hline("═")
 
+        # ── v10.0 Top remediation hints in CLI ───────────────────────────────
+        _seen_hints: set = set()
+        hint_count = 0
+        for fpath, findings in self.report_data.items():
+            for f in findings:
+                issue = f.get("issue", "")
+                if issue in _seen_hints:
+                    continue
+                hint = get_cli_hint(issue)
+                if hint:
+                    if hint_count == 0:
+                        print(f"\n{Fore.GREEN}{'🔧 TOP REMEDIATION HINTS':^{W}}{Style.RESET_ALL}")
+                        hline()
+                    _seen_hints.add(issue)
+                    sev = f.get("severity", "")
+                    c = SEV_COLOUR.get(sev, Fore.WHITE)
+                    print(f"  {c}[{sev:>8}]{Style.RESET_ALL} {Fore.WHITE}{issue}{Style.RESET_ALL}")
+                    print(f"           {Fore.GREEN}{hint}{Style.RESET_ALL}")
+                    hint_count += 1
+                    if hint_count >= 8:
+                        break
+            if hint_count >= 8:
+                break
+        if hint_count:
+            hline()
+
         self.generate_html_report()
 
 # --- AUDIT MODULES ---
@@ -547,6 +579,20 @@ def audit_cpp(file_path, audit_obj):
                               snippet_override=tf.snippet,
                               note_override=tf.note,
                               confidence_override=tf.confidence)
+
+    # --- Stage 1b+: v10.0 Advanced source-to-sink taint analysis ---
+    adv_findings = AdvancedTaintAnalyzer().analyze(file_path)
+    for af in adv_findings:
+        hint = get_cli_hint(af.issue_type)
+        print(f"{Fore.RED}[!!!] AdvTaint [{af.confidence}] {af.issue_type} "
+              f"@ line {af.line} — {af.threat_level} risk={af.risk_score}/10")
+        if hint:
+            print(f"      {Fore.GREEN}{hint}{Style.RESET_ALL}")
+        audit_obj.add_finding(file_path, "AdvancedTaint", af.issue_type,
+                              line_override=af.line,
+                              snippet_override=af.snippet,
+                              note_override=af.note,
+                              confidence_override=af.confidence)
 
     # --- Stage 1c: Deep multi-pass inter-procedural analysis ---
     deep_findings = DeepAnalyzer().analyze(file_path)
@@ -694,6 +740,20 @@ def audit_python(file_path, audit_obj):
                               note_override=tf.note,
                               confidence_override=tf.confidence)
 
+    # --- v10.0 Advanced source-to-sink taint analysis ---
+    adv_findings = AdvancedTaintAnalyzer().analyze(file_path)
+    for af in adv_findings:
+        hint = get_cli_hint(af.issue_type)
+        print(f"{Fore.RED}[!!!] AdvTaint [{af.confidence}] {af.issue_type} "
+              f"@ line {af.line} — {af.threat_level} risk={af.risk_score}/10")
+        if hint:
+            print(f"      {Fore.GREEN}{hint}{Style.RESET_ALL}")
+        audit_obj.add_finding(file_path, "AdvancedTaint", af.issue_type,
+                              line_override=af.line,
+                              snippet_override=af.snippet,
+                              note_override=af.note,
+                              confidence_override=af.confidence)
+
     crashed, _ = audit_obj.run_fuzzer(["python3", file_path], file_path)
     if crashed:
         print(f"{Fore.RED}[!!!] FUZZER CRASH: Python script failed on malicious input.")
@@ -788,6 +848,20 @@ def audit_go(file_path, audit_obj):
                               note_override=tf.note,
                               confidence_override=tf.confidence)
 
+    # --- v10.0 Advanced source-to-sink taint analysis ---
+    adv_findings = AdvancedTaintAnalyzer().analyze(file_path)
+    for af in adv_findings:
+        hint = get_cli_hint(af.issue_type)
+        print(f"{Fore.RED}[!!!] AdvTaint [{af.confidence}] {af.issue_type} "
+              f"@ line {af.line} — {af.threat_level} risk={af.risk_score}/10")
+        if hint:
+            print(f"      {Fore.GREEN}{hint}{Style.RESET_ALL}")
+        audit_obj.add_finding(file_path, "AdvancedTaint", af.issue_type,
+                              line_override=af.line,
+                              snippet_override=af.snippet,
+                              note_override=af.note,
+                              confidence_override=af.confidence)
+
     crashed, _ = audit_obj.run_fuzzer(["go", "run", "-race", file_path], file_path)
     if crashed:
         print(f"{Fore.RED}[!!!] Dynamic: GO Logic/Race failure confirmed.")
@@ -809,6 +883,20 @@ def audit_rust(file_path, audit_obj):
                               snippet_override=tf.snippet,
                               note_override=tf.note,
                               confidence_override=tf.confidence)
+
+    # --- v10.0 Advanced source-to-sink taint analysis ---
+    adv_findings = AdvancedTaintAnalyzer().analyze(file_path)
+    for af in adv_findings:
+        hint = get_cli_hint(af.issue_type)
+        print(f"{Fore.RED}[!!!] AdvTaint [{af.confidence}] {af.issue_type} "
+              f"@ line {af.line} — {af.threat_level} risk={af.risk_score}/10")
+        if hint:
+            print(f"      {Fore.GREEN}{hint}{Style.RESET_ALL}")
+        audit_obj.add_finding(file_path, "AdvancedTaint", af.issue_type,
+                              line_override=af.line,
+                              snippet_override=af.snippet,
+                              note_override=af.note,
+                              confidence_override=af.confidence)
 
     with open(file_path, 'r') as f:
         content = f.read()
@@ -836,6 +924,20 @@ def audit_java(file_path, audit_obj):
                               snippet_override=tf.snippet,
                               note_override=tf.note,
                               confidence_override=tf.confidence)
+
+    # --- v10.0 Advanced source-to-sink taint analysis ---
+    adv_findings = AdvancedTaintAnalyzer().analyze(file_path)
+    for af in adv_findings:
+        hint = get_cli_hint(af.issue_type)
+        print(f"{Fore.RED}[!!!] AdvTaint [{af.confidence}] {af.issue_type} "
+              f"@ line {af.line} — {af.threat_level} risk={af.risk_score}/10")
+        if hint:
+            print(f"      {Fore.GREEN}{hint}{Style.RESET_ALL}")
+        audit_obj.add_finding(file_path, "AdvancedTaint", af.issue_type,
+                              line_override=af.line,
+                              snippet_override=af.snippet,
+                              note_override=af.note,
+                              confidence_override=af.confidence)
 
     with open(file_path, 'r') as f:
         content = f.read()
@@ -942,7 +1044,46 @@ def analyze_file(file_path, audit_obj):
 if __name__ == "__main__":
     print(f"\n{Fore.CYAN}\u26d4  OVERFLOW GUARD {VERSION} | Researcher: {RESEARCHER_NAME}")
     print(f"{Fore.WHITE}Accepts: local path, local file, GitHub URL, or owner/repo shorthand.")
-    path_input = input("Enter Path/File/GitHub Repo: ").strip()
+    print(f"{Fore.WHITE}Options: --diff [staged|working|head|last_tag|commits:base..target]")
+    print(f"{Fore.WHITE}         --diff-only (skip full scan, only scan changed files)")
+
+    # ── Parse CLI arguments ───────────────────────────────────────────────────
+    _diff_mode = None
+    _diff_base = None
+    _diff_target = None
+    _diff_only = False
+    _args = sys.argv[1:]
+
+    # Extract --diff and --diff-only flags
+    _filtered_args = []
+    i = 0
+    while i < len(_args):
+        if _args[i] == "--diff-only":
+            _diff_only = True
+            _diff_mode = _diff_mode or "head"
+            i += 1
+        elif _args[i] == "--diff":
+            if i + 1 < len(_args) and not _args[i + 1].startswith("--"):
+                raw = _args[i + 1]
+                if raw.startswith("commits:"):
+                    _diff_mode = "commits"
+                    parts = raw[8:].split("..", 1)
+                    _diff_base = parts[0]
+                    _diff_target = parts[1] if len(parts) > 1 else "HEAD"
+                else:
+                    _diff_mode = raw
+                i += 2
+            else:
+                _diff_mode = "head"
+                i += 1
+        else:
+            _filtered_args.append(_args[i])
+            i += 1
+
+    if _filtered_args:
+        path_input = _filtered_args[0]
+    else:
+        path_input = input("Enter Path/File/GitHub Repo: ").strip()
 
     # ── Detect whether the input is a GitHub repo reference ───────────────────
     _gh_context  = None    # holds the live context manager when scanning GitHub
@@ -996,30 +1137,80 @@ if __name__ == "__main__":
         "site-packages", "dist-packages",
     }
 
-    if os.path.isdir(path_input):
-        for root, dirs, files in os.walk(path_input):
-            # Prune dirs in-place so os.walk does not descend into them
-            dirs[:] = [
-                d for d in dirs
-                if d not in SKIP_DIRS
-                and not d.endswith((".egg-info", ".dist-info"))
-            ]
-            for f in files:
-                # v9.0: support 14 languages (C/C++, Python, Java, Go, Rust,
-                # JavaScript, TypeScript, PHP, Ruby, C#, Kotlin, Swift, Scala)
-                _SCAN_EXTS = (
-                    ".c", ".cpp", ".cc", ".py", ".go", ".rs", ".java",
-                    ".js", ".mjs", ".cjs", ".jsx",
-                    ".ts", ".tsx",
-                    ".php", ".rb", ".cs",
-                    ".kt", ".kts",
-                    ".swift",
-                    ".scala", ".sc",
-                )
-                if f.endswith(_SCAN_EXTS):
-                    analyze_file(os.path.join(root, f), audit)
-    elif os.path.isfile(path_input):
-        analyze_file(path_input, audit)
+    # v10.0: support 14 languages
+    _SCAN_EXTS = (
+        ".c", ".cpp", ".cc", ".py", ".go", ".rs", ".java",
+        ".js", ".mjs", ".cjs", ".jsx",
+        ".ts", ".tsx",
+        ".php", ".rb", ".cs",
+        ".kt", ".kts",
+        ".swift",
+        ".scala", ".sc",
+    )
+
+    # ── v10.0 Differential scanning ─────────────────────────────────────────
+    _diff_files: list = []   # will hold DiffResult objects if diff mode is active
+
+    if _diff_mode and os.path.isdir(path_input):
+        print(f"\n{Fore.CYAN}━━━  Differential Scanning (git diff --{_diff_mode})  ━━━{Style.RESET_ALL}")
+        try:
+            _diff_files = get_changed_files(
+                path_input,
+                mode=_diff_mode,
+                base=_diff_base,
+                target=_diff_target,
+            )
+            scanner = DiffScanner(path_input)
+            print(f"{Fore.GREEN}{scanner.summary(_diff_files)}{Style.RESET_ALL}")
+
+            if _diff_only:
+                # Only scan changed files
+                if _diff_files:
+                    print(f"{Fore.YELLOW}[*] --diff-only: scanning only {len(_diff_files)} changed file(s)")
+                    for dr in _diff_files:
+                        analyze_file(dr.file_path, audit)
+                else:
+                    print(f"{Fore.GREEN}[✔] No scannable files changed — nothing to scan.")
+            else:
+                # Scan changed files first (highlighted), then full scan
+                print(f"{Fore.YELLOW}[*] Scanning {len(_diff_files)} changed file(s) first...")
+                _changed_paths = {dr.file_path for dr in _diff_files}
+                for dr in _diff_files:
+                    print(f"{Fore.YELLOW}  ⚡ [CHANGED] {dr.relative_path} "
+                          f"(+{dr.additions}/-{dr.deletions})")
+                    analyze_file(dr.file_path, audit)
+
+                # Then scan remaining files
+                print(f"\n{Fore.CYAN}[*] Scanning remaining files...")
+                for root, dirs, files in os.walk(path_input):
+                    dirs[:] = [
+                        d for d in dirs
+                        if d not in SKIP_DIRS
+                        and not d.endswith((".egg-info", ".dist-info"))
+                    ]
+                    for f in files:
+                        fp = os.path.join(root, f)
+                        if fp not in _changed_paths and f.endswith(_SCAN_EXTS):
+                            analyze_file(fp, audit)
+        except RuntimeError as e:
+            print(f"{Fore.YELLOW}[!] Differential scan failed: {e}")
+            print(f"{Fore.YELLOW}[!] Falling back to full scan...")
+            _diff_mode = None   # fall through to normal scan
+
+    if not (_diff_mode and os.path.isdir(path_input)):
+        # Regular full scan (original behavior)
+        if os.path.isdir(path_input):
+            for root, dirs, files in os.walk(path_input):
+                dirs[:] = [
+                    d for d in dirs
+                    if d not in SKIP_DIRS
+                    and not d.endswith((".egg-info", ".dist-info"))
+                ]
+                for f in files:
+                    if f.endswith(_SCAN_EXTS):
+                        analyze_file(os.path.join(root, f), audit)
+        elif os.path.isfile(path_input):
+            analyze_file(path_input, audit)
 
     # ── Stage 3: SCA — dependency vulnerability / license scanning ────────────
     print(f"\n{Fore.CYAN}━━━  Stage 3: Software Composition Analysis (SCA)  ━━━{Style.RESET_ALL}")
@@ -1143,8 +1334,8 @@ if __name__ == "__main__":
     except Exception as _sarif_err:
         print(f"{Fore.YELLOW}[!] SARIF generation failed: {_sarif_err}")
 
-    # ── Final v9.0 summary banner ─────────────────────────────────────────────
-    print(f"\n{Fore.CYAN}━━━  v9.0 Summary  ━━━{Style.RESET_ALL}")
+    # ── Final v10.0 summary banner ────────────────────────────────────────────
+    print(f"\n{Fore.CYAN}━━━  v10.0 Summary  ━━━{Style.RESET_ALL}")
     print(f"  AST engine           : {_TS_LABEL}")
     print(f"  Languages supported  : C, C++, Python, Java, Go, Rust, JS, TS, PHP, Ruby, C#, Kotlin, Swift, Scala")
     print(f"  SCA findings         : {len(sca_findings)} CVEs in dependencies")
@@ -1152,6 +1343,10 @@ if __name__ == "__main__":
     print(f"  Snippet matches      : {len(snippet_matches)}")
     print(f"  Secrets detected     : {len(secrets_findings)}")
     print(f"  SBOM components      : {len(all_deps)} dependencies documented")
+    if _diff_mode:
+        print(f"  Diff mode            : {_diff_mode} ({len(_diff_files)} changed files)")
+    print(f"  Remediation snippets : Enabled (Secure Alternative guidance in report)")
+    print(f"  Advanced taint       : Source-to-sink with risk scoring")
 
     # ── If we used a GitHub context, release it (triggers temp-dir cleanup) ───
     if _gh_context is not None:

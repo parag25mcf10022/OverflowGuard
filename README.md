@@ -1,8 +1,8 @@
-# 🛡️ OverflowGuard v9.0
+# 🛡️ OverflowGuard v10.0
 
 **Lead Researcher:** Parag Bagade  
 **GitHub:** [parag25mcf10022/OverflowGuard](https://github.com/parag25mcf10022/OverflowGuard)  
-**Status:** Production Ready — v9.0 (Real AST Parsing + CFG Dataflow + Symbolic Execution + 14 Languages)
+**Status:** Production Ready — v10.0 (Differential Scanning + Remediation Guidance + Advanced Taint Analysis)
 
 ![CI](https://github.com/parag25mcf10022/OverflowGuard/actions/workflows/ci.yml/badge.svg)
 
@@ -12,7 +12,7 @@
 
 **OverflowGuard** is a polyglot security orchestration framework that detects, classifies, and reports memory-corruption and logic vulnerabilities across **14 programming languages**: C, C++, Python, Go, Rust, Java, JavaScript, TypeScript, PHP, Ruby, C#, Kotlin, Swift, and Scala.
 
-Unlike surface-level scanners that rely on regex pattern matching, v9.0 introduces **real AST parsing** (tree-sitter), **real dataflow analysis** on Control-Flow Graphs (reaching definitions, taint propagation with gen/kill semantics), **real symbolic execution** (Z3 SMT solver with bitvector arithmetic, path constraints, and counterexample generation), and **context-aware false-positive filtering** (dominator-based sanitizer verification, dead-code elimination, test-code detection).
+Unlike surface-level scanners that rely on regex pattern matching, OverflowGuard features **real AST parsing** (tree-sitter), **real dataflow analysis** on Control-Flow Graphs (reaching definitions, taint propagation with gen/kill semantics), **real symbolic execution** (Z3 SMT solver with bitvector arithmetic, path constraints, and counterexample generation), **context-aware false-positive filtering** (dominator-based sanitizer verification, dead-code elimination, test-code detection), **advanced source-to-sink taint analysis** (Checkmarx/CodeQL-style risk scoring), **differential scanning** (git-aware, only scan changed files), and **remediation guidance** (secure alternative code snippets for 28 vulnerability types).
 
 | Stage | Technology | What it covers |
 |---|---|---|
@@ -28,17 +28,26 @@ Unlike surface-level scanners that rely on regex pattern matching, v9.0 introduc
 | 1f — Symbolic Ranges | `symbolic_check.py` (Z3 / fallback) | C/C++, Python |
 | 1g — Interprocedural | `interprocedural_taint.py` | C/C++, Python |
 | 1h — Concurrency | `concurrency_analyzer.py` | C/C++, Go |
+| 1i — Advanced Taint | `advanced_taint.py` (source→sink, CVSS risk scoring) | C/C++, Python, Java, Go, Rust |
 | 2a — External SAST | cppcheck + clang-tidy + semgrep + Infer + LLVM | C/C++, Python, Java |
 | 2b — Concolic Fuzzing | `concolic_fuzzer.py` (angr → AFL++ → ASAN) | C/C++ |
 | 3 — SCA | `sca_scanner.py` (OSV API) | All manifest formats |
 | 4 — Secrets Scan | `secrets_scanner.py` (30+ patterns + entropy) | All source + config files |
 | **★ GitHub** | **`github_scanner.py` (clone or Contents API)** | **Any public or private GitHub repo** |
 
-Output formats: **HTML dashboard**, **SARIF 2.1.0** (GitHub Code Scanning / Azure DevOps), **CycloneDX 1.4 SBOM**.
+Output formats: **HTML dashboard** (with secure-alternative remediation cards), **SARIF 2.1.0** (GitHub Code Scanning / Azure DevOps), **CycloneDX 1.4 SBOM**.
+
+Scan modes: **Full directory scan**, **single file**, **GitHub repo**, **differential scan** (git-aware, `--diff` flag).
 
 ---
 
 ## ✨ Features
+
+### v10.0 — Differential Scanning, Remediation Guidance, Advanced Taint
+
+- **Differential scanning** (`diff_scanner.py`) — git-aware mode that only scans **changed files** to dramatically reduce scan times on large repositories; supports five diff modes: `staged` (files in the git index), `working` (unstaged changes), `head` (last commit), `commits:N` (last N commits), `last-tag` (changes since the most recent tag); automatically detects the repository root and falls back to a full scan if git is unavailable; pass `--diff [mode]` and optionally `--diff-only` on the CLI
+- **Remediation guidance** (`remediation_db.py`) — every finding now includes a **"Secure Alternative"** code snippet card in the HTML report and a one-liner hint in the CLI output; covers **28 vulnerability types** with dangerous-call explanation, why it's dangerous, secure replacement, language-tagged code snippet, and reference links (CWE / OWASP); integrated directly into the per-finding cards in the HTML dashboard as collapsible `<details>` blocks
+- **Advanced source-to-sink taint analysis** (`advanced_taint.py`) — elite Checkmarx / CodeQL-style taint engine that tracks attacker-controlled data from **sources** (network sockets, `recv`, `fgets`, `input()`, `http.Request`, `stdin`) to **sinks** (`system()`, `exec()`, `memcpy`, `strcpy`, SQL execute, `eval`) with **CVSS-like risk scoring** (0–10 scale); dual engine: CFG-based fixpoint taint tracker (tree-sitter) + regex fallback; per-language source/sink/sanitizer databases for C/C++, Python, Java, Go, Rust; sanitizer families (bounds_check, shell_escape, parameterization, input_validation, etc.) reduce risk scores; risk provenance weighting (network=9.8, user_input=8.0, env=5.5, file=3.0)
 
 ### v9.0 — Real Analysis Engine (Industry-Grade)
 
@@ -167,6 +176,26 @@ python3 main.py
 # When prompted: Enter Path/File: samples
 ```
 
+### Differential scan (only changed files)
+
+```bash
+# Scan only files changed since last commit (default: working tree changes)
+python3 main.py --diff
+# When prompted: Enter Path/File: samples
+
+# Scan only staged files
+python3 main.py --diff staged
+
+# Scan changes in last 3 commits
+python3 main.py --diff commits:3
+
+# Scan changes since the last git tag
+python3 main.py --diff last-tag
+
+# Only scan changed files (skip full scan entirely)
+python3 main.py --diff --diff-only
+```
+
 ### Run the standalone fuzzer
 
 ```bash
@@ -185,7 +214,7 @@ python3 -m pytest tests/ -v
 ## 📊 Example Terminal Output
 
 ```
-⛔  OVERFLOW GUARD v9.0 | Researcher: Parag Bagade
+⛔  OVERFLOW GUARD v10.0 | Researcher: Parag Bagade
 
 ┌─────────────────────────────────────────────────────────────────┐
 │ ANALYZING: sample.c                                               │
@@ -198,11 +227,16 @@ python3 -m pytest tests/ -v
 [!!!] AST: [HIGH] stack-buffer-overflow @ line 13 — Dangerous call to strcpy()
 [!!!] AST: [HIGH] use-after-free @ line 23 — Pointer 'ptr' used after free()
 [!] cppcheck: [error] Array 'ptr[10]' accessed at index 49 @ line 21
+[!!!] AdvancedTaint [8.0/10] stack-buffer-overflow @ line 6 — gets → stack buffer
+    💡 Remediation: Replace gets() with fgets(buf, sizeof(buf), stdin)
 [!!!] Concolic [HIGH] stack-buffer-overflow @ line 13 — Heuristic fuzzing crash
 
-───  v9.0 Summary  ───
+───  v10.0 Summary  ───
   AST engine           : AST(tree‑sitter)
   Languages supported  : C, C++, Python, Java, Go, Rust, JS, TS, PHP, Ruby, C#
+  Diff mode            : full (use --diff for incremental)
+  Remediation          : 28 vuln types with secure alternatives
+  Advanced taint       : source→sink with CVSS risk scoring
   SCA findings         : 0 CVEs in dependencies
   Secrets detected     : 0
   SBOM components      : 0 dependencies documented
@@ -282,6 +316,11 @@ tree-sitter-javascript  tree-sitter-typescript
 tree-sitter-php  tree-sitter-ruby  tree-sitter-c-sharp
 z3-solver>=4.12.0        # real_symbolic.py (Z3 SMT solver)
 
+# v10.0 — No additional pip dependencies required
+# diff_scanner.py    — uses subprocess (git) — stdlib only
+# remediation_db.py  — pure Python dataclass DB — stdlib only
+# advanced_taint.py  — reuses tree-sitter (already installed above)
+
 # Optional — advanced analysis (gracefully skipped when absent)
 scikit-learn>=1.3.0      # ml_filter.py
 angr>=9.2                # concolic_fuzzer.py  (~1 GB)
@@ -290,6 +329,8 @@ angr>=9.2                # concolic_fuzzer.py  (~1 GB)
 The SCA, secrets, SBOM, and SARIF modules use only the Python standard library (`urllib`, `hashlib`, `json`, `re`) — **no extra pip packages required** for the v8.0 features.
 
 The v9.0 real-analysis engine uses individual `tree-sitter-*` grammar wheels (11 languages). Without them, the tool gracefully falls back to regex-based analysis. Z3 (`z3-solver`) enables proven symbolic execution findings with counterexamples; without it the engine falls back to interval abstract interpretation.
+
+The v10.0 modules (`diff_scanner.py`, `remediation_db.py`, `advanced_taint.py`) require **no additional pip packages** — they use the Python standard library and reuse tree-sitter grammars already installed for v9.0. The diff scanner requires `git` to be available on `$PATH`.
 
 ### System tools
 
@@ -304,6 +345,7 @@ The v9.0 real-analysis engine uses individual `tree-sitter-*` grammar wheels (11
 | `semgrep` | Multi-language SAST patterns | `pip install semgrep` |
 | `tree-sitter` | v9.0 real AST parsing (14 languages) | `pip install tree-sitter tree-sitter-c ...` |
 | `z3-solver` | v9.0 symbolic execution + proofs | `pip install z3-solver` |
+| `git` | v10.0 differential scanning | `apt install git` |
 | `infer` | Facebook deep C/Java analysis | [fbinfer.com](https://fbinfer.com) |
 | `go` | Go race detector | `apt install golang-go` |
 | `rustc` | Rust keyword/taint scan | `apt install rustc` |
@@ -338,6 +380,7 @@ The repository ships with a **GitHub Actions** workflow (`.github/workflows/ci.y
 
 | Version | Date | Highlights |
 |---|---|---|
+| **v10.0** | 2026-03-08 | **Differential scanning** (`diff_scanner.py` — git-aware, 5 diff modes, `--diff` CLI flag); **remediation guidance** (`remediation_db.py` — 28 vuln types with secure-alternative snippets in HTML + CLI); **advanced source-to-sink taint** (`advanced_taint.py` — Checkmarx/CodeQL-style, CVSS risk scoring 0–10, dual CFG + regex engine, per-language source/sink/sanitizer DBs) |
 | **v9.0** | 2026-03-07 | **Real AST parsing** (tree-sitter, 14 languages); **real CFG-based dataflow** (reaching definitions, taint with gen/kill, fixpoint iteration); **real symbolic execution** (Z3 bitvector, path constraints, counterexamples); **dominator-based FP filter** (sanitizer guard verification, dead-code elimination); 5 new modules (`tree_sitter_engine.py`, `cfg_builder.py`, `real_dataflow.py`, `real_symbolic.py`, `false_positive_filter.py`); 8 new languages (JS, TS, PHP, Ruby, C#, Kotlin, Swift, Scala) |
 | **v8.1** | 2026-03-07 | `github_scanner.py` — scan any GitHub repo by URL/shorthand; git-clone + Contents API fallback; private repo support via GITHUB_TOKEN; full 6-stage pipeline runs on downloaded code |
 | **v8.0** | 2026-03-07 | `sca_scanner.py` (OSV API, 7 manifest formats); `secrets_scanner.py` (30+ patterns + entropy); `sbom_generator.py` (CycloneDX 1.4); `sarif_output.py` (SARIF 2.1.0); 6-stage pipeline |
