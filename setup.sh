@@ -1,8 +1,8 @@
 #!/bin/bash
-# setup.sh — One-shot environment bootstrap for OverflowGuard v10.0
+# setup.sh — One-shot environment bootstrap for OverflowGuard v11.0
 set -e
 
-echo "🛡️  Configuring OverflowGuard v10.0 Environment..."
+echo "🛡️  Configuring OverflowGuard v11.0 Environment..."
 echo ""
 
 # ── System dependencies ───────────────────────────────────────────────────────
@@ -54,7 +54,8 @@ echo "[i] Facebook Infer is optional. Install from: https://fbinfer.com/docs/get
 
 # ── Project directories ───────────────────────────────────────────────────────
 mkdir -p results
-mkdir -p ~/.overflowguard          # trusted ML model store (ml_filter.py)
+mkdir -p ci_templates               # CI pipeline templates
+mkdir -p ~/.overflowguard          # trusted ML model store + trend DB (trend_tracker.py)
 
 # ── Environment file ──────────────────────────────────────────────────────────
 if [ ! -f .env ]; then
@@ -74,7 +75,16 @@ echo ""
 echo "    Run tests:"
 echo "      python3 -m pytest tests/ -v"
 echo ""
-echo "    v10.0 engines installed (tree-sitter + Z3 + diff scanner + remediation DB + advanced taint)."
+echo "    v11.0 engines installed (tree-sitter + Z3 + diff scanner + remediation DB + advanced taint"
+echo "    + IaC scanner + cross-file taint + container scanner + OWASP mapper + custom rules"
+echo "    + auto-fix + JSON output + trend tracker + CI templates)."
+echo ""
+echo "    v11.0 new CLI options:"
+echo "      python3 main.py --format json samples/      # JSON output"
+echo "      python3 main.py --autofix samples/           # auto-fix patches"
+echo "      python3 main.py --incremental samples/       # incremental scan"
+echo "      python3 main.py --init-config                 # sample config"
+echo "      python3 main.py --init-rules                  # sample custom rules"
 echo ""
 echo "    Optional — install ML false-positive filter:"
 echo "      pip install scikit-learn"

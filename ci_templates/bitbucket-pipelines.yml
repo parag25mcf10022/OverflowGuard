@@ -1,0 +1,73 @@
+# =============================================================================
+# OverflowGuard CI — Bitbucket Pipelines
+# =============================================================================
+# Copy this file to bitbucket-pipelines.yml in your project root.
+#
+# Features:
+#   - Python unit tests
+#   - Full OverflowGuard security scan
+#   - SARIF + HTML artifact upload
+#   - Diff scan on pull requests
+# =============================================================================
+
+image: python:3.11-slim
+
+definitions:
+  caches:
+    pip: ~/.cache/pip
+
+  steps:
+    - step: &install
+        name: Install Dependencies
+        caches:
+          - pip
+        script:
+          - apt-get update -qq && apt-get install -y -qq gcc g++ cppcheck git
+          - pip install --upgrade pip -q
+          - pip install -r requirements.txt -q
+
+    - step: &test
+        name: Unit Tests
+        caches:
+          - pip
+        script:
+          - apt-get update -qq && apt-get install -y -qq gcc g++ cppcheck git
+          - pip install -r requirements.txt -q
+          - python -m pytest tests/ -v --tb=short
+
+    - step: &full-scan
+        name: Security Scan
+        caches:
+          - pip
+        script:
+          - apt-get update -qq && apt-get install -y -qq gcc g++ cppcheck clang-tidy git
+          - pip install -r requirements.txt -q
+          - echo "." | python main.py --format all
+        artifacts:
+          - results/**
+
+    - step: &diff-scan
+        name: Diff Scan (PR only)
+        caches:
+          - pip
+        script:
+          - apt-get update -qq && apt-get install -y -qq gcc g++ cppcheck git
+          - pip install -r requirements.txt -q
+          - echo "." | python main.py --diff head --diff-only --format json
+        artifacts:
+          - results/*.json
+
+pipelines:
+  default:
+    - step: *test
+    - step: *full-scan
+
+  pull-requests:
+    '**':
+      - step: *test
+      - step: *diff-scan
+
+  branches:
+    main:
+      - step: *test
+      - step: *full-scan

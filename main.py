@@ -49,8 +49,20 @@ from diff_scanner import DiffScanner, DiffMode, DiffResult, get_changed_files
 from remediation_db import get_remediation, get_cli_hint, get_html_snippet
 from advanced_taint import AdvancedTaintAnalyzer, AdvancedTaintFinding, format_taint_summary
 
+# ── v11.0 New feature modules ────────────────────────────────────────────────
+from project_config import load_config, generate_sample_config, ProjectConfig
+from iac_scanner import scan_iac_directory, iac_summary
+from cross_file_taint import CrossFileTaintAnalyzer, run_cross_file_taint
+from autofix import AutoFixEngine, generate_fixes_for_report
+from json_output import generate_json_report, print_json_summary
+from trend_tracker import TrendTracker
+from custom_rules import CustomRuleEngine, generate_sample_rules
+from container_scanner import run_container_scan, container_summary
+from incremental_analysis import IncrementalAnalyzer, run_incremental_analysis
+from owasp_mapper import generate_owasp_report, format_owasp_cli, format_owasp_html
+
 # Shared singletons (created once per process)
-_CACHE    = CacheManager(version="10.0")
+_CACHE    = CacheManager(version="11.0")
 _ML       = MLFilter()
 _CALL_DB  = CallSummaryDB()
 _TS_LABEL = "AST(tree‑sitter)" if TS_AVAILABLE else "AST(regex)"
@@ -67,7 +79,7 @@ except ImportError:
 # --- CONFIGURATION ---
 RESEARCHER_NAME = "Parag Bagade"
 GITHUB_REPO_URL = "https://github.com/parag25mcf10022/OverflowGuard"
-VERSION = "v10.0"
+VERSION = "v11.0"
 
 class AuditManager:
     def __init__(self, target_input):
@@ -1046,15 +1058,43 @@ if __name__ == "__main__":
     print(f"{Fore.WHITE}Accepts: local path, local file, GitHub URL, or owner/repo shorthand.")
     print(f"{Fore.WHITE}Options: --diff [staged|working|head|last_tag|commits:base..target]")
     print(f"{Fore.WHITE}         --diff-only (skip full scan, only scan changed files)")
+    print(f"{Fore.WHITE}         --format [html|json|sarif|all]  (output format, default: html)")
+    print(f"{Fore.WHITE}         --severity [critical|high|medium|low]  (min severity threshold)")
+    print(f"{Fore.WHITE}         --autofix  (generate auto-fix patches for findings)")
+    print(f"{Fore.WHITE}         --init-config  (generate sample .overflowguard.yml)")
+    print(f"{Fore.WHITE}         --init-rules   (generate sample custom rules directory)")
+    print(f"{Fore.WHITE}         --rules-dir <path>  (custom rules directory)")
+    print(f"{Fore.WHITE}         --incremental   (only scan changed files + dependency cone)")
+    print(f"{Fore.WHITE}         --no-iac  --no-container  --no-owasp  (disable specific stages)")
 
     # ── Parse CLI arguments ───────────────────────────────────────────────────
     _diff_mode = None
     _diff_base = None
     _diff_target = None
     _diff_only = False
+    _output_format = "html"
+    _severity_threshold = None
+    _autofix_enabled = False
+    _incremental = False
+    _rules_dir = None
+    _no_iac = False
+    _no_container = False
+    _no_owasp = False
     _args = sys.argv[1:]
 
-    # Extract --diff and --diff-only flags
+    # Handle --init-config early
+    if "--init-config" in _args:
+        config_path = generate_sample_config()
+        print(f"{Fore.GREEN}[✔] Sample config written to: {config_path}")
+        sys.exit(0)
+
+    # Handle --init-rules early
+    if "--init-rules" in _args:
+        rules_path = generate_sample_rules()
+        print(f"{Fore.GREEN}[✔] Sample rules written to: {rules_path}")
+        sys.exit(0)
+
+    # Extract all flags
     _filtered_args = []
     i = 0
     while i < len(_args):
@@ -1076,6 +1116,39 @@ if __name__ == "__main__":
             else:
                 _diff_mode = "head"
                 i += 1
+        elif _args[i] == "--format":
+            if i + 1 < len(_args):
+                _output_format = _args[i + 1].lower()
+                i += 2
+            else:
+                i += 1
+        elif _args[i] == "--severity":
+            if i + 1 < len(_args):
+                _severity_threshold = _args[i + 1].upper()
+                i += 2
+            else:
+                i += 1
+        elif _args[i] == "--autofix":
+            _autofix_enabled = True
+            i += 1
+        elif _args[i] == "--incremental":
+            _incremental = True
+            i += 1
+        elif _args[i] == "--rules-dir":
+            if i + 1 < len(_args):
+                _rules_dir = _args[i + 1]
+                i += 2
+            else:
+                i += 1
+        elif _args[i] == "--no-iac":
+            _no_iac = True
+            i += 1
+        elif _args[i] == "--no-container":
+            _no_container = True
+            i += 1
+        elif _args[i] == "--no-owasp":
+            _no_owasp = True
+            i += 1
         else:
             _filtered_args.append(_args[i])
             i += 1
@@ -1127,6 +1200,18 @@ if __name__ == "__main__":
         or os.path.basename(path_input.rstrip(os.sep))
         or "audit_report"
     )
+
+    # ── v11.0: Load project configuration ────────────────────────────────────
+    _project_config: ProjectConfig = load_config(path_input)
+    if _project_config.config_path:
+        print(f"{Fore.GREEN}[✔] Config loaded: {_project_config.config_path}{Style.RESET_ALL}")
+    # CLI overrides
+    if _severity_threshold:
+        _project_config.severity_threshold = _severity_threshold.lower()
+    if _no_iac:
+        _project_config.enable_iac = False
+    if _no_container:
+        _project_config.enable_container_scan = False
 
     # Directories that must never be scanned: virtual-env, caches, VCS, build artefacts
     SKIP_DIRS: set = {
@@ -1304,8 +1389,8 @@ if __name__ == "__main__":
         })
         audit.stats[sev] = audit.stats.get(sev, 0) + 1
 
-    # ── Generate HTML report (includes SCA + secrets findings) ────────────────
-    audit.save_final_summary()
+    # ── Generate HTML report after SCA + Secrets (pre-v11.0 stages) ────────────
+    # NOTE: Final HTML report is regenerated after v11.0 stages complete
 
     # ── Stage 5: SBOM generation (CycloneDX 1.4) ─────────────────────────────
     print(f"\n{Fore.CYAN}━━━  Stage 5: SBOM Generation (CycloneDX 1.4)  ━━━{Style.RESET_ALL}")
@@ -1334,8 +1419,243 @@ if __name__ == "__main__":
     except Exception as _sarif_err:
         print(f"{Fore.YELLOW}[!] SARIF generation failed: {_sarif_err}")
 
-    # ── Final v10.0 summary banner ────────────────────────────────────────────
-    print(f"\n{Fore.CYAN}━━━  v10.0 Summary  ━━━{Style.RESET_ALL}")
+    # ═══════════════════════════════════════════════════════════════════════════
+    # v11.0 NEW STAGES
+    # ═══════════════════════════════════════════════════════════════════════════
+
+    # ── Stage 7: IaC Security Scanning ────────────────────────────────────────
+    _iac_findings = []
+    if _project_config.enable_iac and not _no_iac:
+        print(f"\n{Fore.CYAN}━━━  Stage 7: Infrastructure-as-Code (IaC) Scanning  ━━━{Style.RESET_ALL}")
+        try:
+            _iac_findings = scan_iac_directory(sca_root, verbose=True)
+            print(f"{Fore.GREEN}{iac_summary(_iac_findings)}{Style.RESET_ALL}")
+            for iac_f in _iac_findings:
+                fp = iac_f.file_path
+                if fp not in audit.report_data:
+                    audit.report_data[fp] = []
+                audit.report_data[fp].append({
+                    "stage":       "IaC",
+                    "issue":       iac_f.rule_id,
+                    "type":        iac_f.issue_type,
+                    "severity":    iac_f.severity.upper(),
+                    "cwe":         iac_f.cwe or "N/A",
+                    "cve":         "N/A",
+                    "cvss":        "N/A",
+                    "description": iac_f.description,
+                    "remediation": iac_f.remediation,
+                    "line":        iac_f.line,
+                    "snippet":     iac_f.snippet,
+                    "confidence":  "High",
+                    "note":        f"Framework: {iac_f.framework}",
+                })
+                sev_key = iac_f.severity.upper()
+                audit.stats[sev_key] = audit.stats.get(sev_key, 0) + 1
+        except Exception as _iac_err:
+            print(f"{Fore.YELLOW}[!] IaC scan failed: {_iac_err}{Style.RESET_ALL}")
+
+    # ── Stage 8: Cross-file Taint Analysis ────────────────────────────────────
+    _cross_file_findings = []
+    if os.path.isdir(path_input):
+        print(f"\n{Fore.CYAN}━━━  Stage 8: Cross-file Taint Analysis  ━━━{Style.RESET_ALL}")
+        try:
+            _cross_file_findings = run_cross_file_taint(path_input, verbose=True)
+            print(f"{Fore.GREEN}[✔] Cross-file taint: {len(_cross_file_findings)} cross-boundary flows detected{Style.RESET_ALL}")
+            for cf in _cross_file_findings:
+                fp = cf.sink_file
+                if fp not in audit.report_data:
+                    audit.report_data[fp] = []
+                audit.report_data[fp].append({
+                    "stage":       "CrossFileTaint",
+                    "issue":       cf.issue_type,
+                    "type":        cf.issue_type,
+                    "severity":    cf.severity.upper(),
+                    "cwe":         cf.cwe or "N/A",
+                    "cve":         "N/A",
+                    "cvss":        "N/A",
+                    "description": cf.description,
+                    "remediation": "Validate/sanitize data at the boundary between files",
+                    "line":        cf.sink_line,
+                    "snippet":     " → ".join(cf.taint_chain),
+                    "confidence":  "High" if cf.risk_score >= 7.0 else "Medium",
+                    "note":        f"Taint chain: {' → '.join(cf.taint_chain)}",
+                })
+                sev_key = cf.severity.upper()
+                audit.stats[sev_key] = audit.stats.get(sev_key, 0) + 1
+        except Exception as _cf_err:
+            print(f"{Fore.YELLOW}[!] Cross-file taint failed: {_cf_err}{Style.RESET_ALL}")
+
+    # ── Stage 9: Container Image Scanning ─────────────────────────────────────
+    _container_findings = []
+    _base_images = []
+    if _project_config.enable_container_scan and not _no_container:
+        print(f"\n{Fore.CYAN}━━━  Stage 9: Container & Dockerfile Scanning  ━━━{Style.RESET_ALL}")
+        try:
+            _container_findings, _base_images, _cont_summary = run_container_scan(sca_root, verbose=True)
+            print(f"{Fore.GREEN}{_cont_summary}{Style.RESET_ALL}")
+            for cf in _container_findings:
+                fp = cf.file_path
+                if fp not in audit.report_data:
+                    audit.report_data[fp] = []
+                audit.report_data[fp].append({
+                    "stage":       "Container",
+                    "issue":       cf.rule_id,
+                    "type":        cf.category,
+                    "severity":    cf.severity.upper(),
+                    "cwe":         cf.cwe or "N/A",
+                    "cve":         "N/A",
+                    "cvss":        "N/A",
+                    "description": cf.description,
+                    "remediation": cf.remediation,
+                    "line":        cf.line,
+                    "snippet":     cf.snippet,
+                    "confidence":  "High",
+                    "note":        f"Category: {cf.category}",
+                })
+                sev_key = cf.severity.upper()
+                audit.stats[sev_key] = audit.stats.get(sev_key, 0) + 1
+        except Exception as _cont_err:
+            print(f"{Fore.YELLOW}[!] Container scan failed: {_cont_err}{Style.RESET_ALL}")
+
+    # ── Stage 10: Custom Rule Engine ──────────────────────────────────────────
+    _custom_findings = []
+    _custom_rules_dir = _rules_dir or os.path.join(sca_root, "rules")
+    if os.path.isdir(_custom_rules_dir):
+        print(f"\n{Fore.CYAN}━━━  Stage 10: Custom Rules Engine  ━━━{Style.RESET_ALL}")
+        try:
+            cre = CustomRuleEngine()
+            cre.load_rules_from_dir(_custom_rules_dir)
+            if cre.rules:
+                _custom_findings = cre.scan_directory(sca_root)
+                print(f"{Fore.GREEN}[✔] Custom rules: {len(cre.rules)} rules loaded, {len(_custom_findings)} findings{Style.RESET_ALL}")
+                for cf in _custom_findings:
+                    fp = cf.file_path
+                    if fp not in audit.report_data:
+                        audit.report_data[fp] = []
+                    audit.report_data[fp].append({
+                        "stage":       "CustomRules",
+                        "issue":       cf.rule_id,
+                        "type":        cf.rule_id,
+                        "severity":    cf.severity.upper(),
+                        "cwe":         cf.cwe or "N/A",
+                        "cve":         "N/A",
+                        "cvss":        "N/A",
+                        "description": cf.message,
+                        "remediation": cf.fix or "See custom rule definition",
+                        "line":        cf.line,
+                        "snippet":     cf.snippet,
+                        "confidence":  "Medium",
+                        "note":        f"Custom rule: {cf.rule_id}",
+                    })
+                    sev_key = cf.severity.upper()
+                    audit.stats[sev_key] = audit.stats.get(sev_key, 0) + 1
+        except Exception as _cr_err:
+            print(f"{Fore.YELLOW}[!] Custom rules failed: {_cr_err}{Style.RESET_ALL}")
+
+    # ── Stage 11: OWASP Top 10 Mapping ───────────────────────────────────────
+    _owasp_report = None
+    if not _no_owasp:
+        print(f"\n{Fore.CYAN}━━━  Stage 11: OWASP Top 10 (2021) Coverage Report  ━━━{Style.RESET_ALL}")
+        try:
+            # Collect all findings as flat dicts
+            _all_findings_flat = []
+            for fpath, findings in audit.report_data.items():
+                for f in findings:
+                    _all_findings_flat.append({
+                        "issue_type": f.get("issue", f.get("type", "")),
+                        "severity":   f.get("severity", "MEDIUM"),
+                        "description": f.get("description", ""),
+                        "cwe":        f.get("cwe", ""),
+                    })
+
+            from dataclasses import asdict as _asdict
+            _iac_dicts = [{"rule_id": f.rule_id, "severity": f.severity, "description": f.description,
+                           "cwe": f.cwe, "issue_type": f.issue_type} for f in _iac_findings]
+            _cf_dicts = [{"issue_type": f.issue_type, "severity": f.severity,
+                          "description": f.description, "cwe": f.cwe} for f in _cross_file_findings]
+            _cont_dicts = [{"rule_id": f.rule_id, "severity": f.severity,
+                            "description": f.description, "cwe": f.cwe} for f in _container_findings]
+
+            _owasp_report = generate_owasp_report(
+                findings=_all_findings_flat,
+                iac_findings=_iac_dicts,
+                cross_file_findings=_cf_dicts,
+                container_findings=_cont_dicts,
+            )
+            print(format_owasp_cli(_owasp_report))
+        except Exception as _owasp_err:
+            print(f"{Fore.YELLOW}[!] OWASP mapping failed: {_owasp_err}{Style.RESET_ALL}")
+
+    # ── Stage 12: Auto-fix Patch Generation ───────────────────────────────────
+    _auto_fixes = []
+    if _autofix_enabled:
+        print(f"\n{Fore.CYAN}━━━  Stage 12: Auto-fix Patch Generation  ━━━{Style.RESET_ALL}")
+        try:
+            _auto_fixes, _fix_summary = generate_fixes_for_report(audit.report_data)
+            print(f"{Fore.GREEN}{_fix_summary}{Style.RESET_ALL}")
+            if _auto_fixes:
+                engine = AutoFixEngine()
+                patch_path = engine.generate_patch_file(_auto_fixes, audit.results_dir)
+                if patch_path:
+                    print(f"{Fore.GREEN}[✔] Patch file: {Fore.WHITE}{patch_path}")
+        except Exception as _fix_err:
+            print(f"{Fore.YELLOW}[!] Auto-fix generation failed: {_fix_err}{Style.RESET_ALL}")
+
+    # ── Stage 13: Trend Tracking ──────────────────────────────────────────────
+    _trend_data = None
+    try:
+        print(f"\n{Fore.CYAN}━━━  Stage 13: Severity Trend Tracking  ━━━{Style.RESET_ALL}")
+        _tracker = TrendTracker()
+
+        _tracker.record_scan(
+            project=proj_name,
+            target=path_input,
+            stats=audit.stats,
+            sca_count=len(sca_findings),
+            secrets_count=len(secrets_findings),
+            iac_count=len(_iac_findings),
+        )
+        _trend_data = _tracker.compare(proj_name)
+        if _trend_data:
+            print(_tracker.format_trend_cli(_trend_data))
+    except Exception as _trend_err:
+        print(f"{Fore.YELLOW}[!] Trend tracking failed: {_trend_err}{Style.RESET_ALL}")
+
+    # ── Stage 14: JSON Output (if requested) ──────────────────────────────────
+    if _output_format in ("json", "all"):
+        print(f"\n{Fore.CYAN}━━━  Stage 14: JSON Report  ━━━{Style.RESET_ALL}")
+        try:
+            from dataclasses import asdict as _asd
+            _json_path = generate_json_report(
+                audit_manager=audit,
+                sca_findings=[{
+                    "name": sf.dep.name, "version": sf.dep.version,
+                    "severity": sf.severity, "cve_id": sf.cve_id,
+                    "cvss": sf.cvss, "summary": sf.summary,
+                    "fixed_version": sf.fixed_version or "",
+                } for sf in sca_findings],
+                iac_findings=[{"rule_id": f.rule_id, "severity": f.severity,
+                               "description": f.description, "file": f.file_path,
+                               "line": f.line} for f in _iac_findings],
+                cross_file_findings=[{"issue_type": f.issue_type, "severity": f.severity,
+                                       "source_file": f.source_file, "sink_file": f.sink_file,
+                                       "description": f.description} for f in _cross_file_findings],
+                owasp_mapping=_owasp_report.to_dict() if _owasp_report else None,
+                trend_data=_tracker.get_trend_data_for_json(proj_name) if _trend_data else None,
+                auto_fixes=[{"file": f.file_path, "line": f.line, "issue": f.issue_type,
+                             "fix": f.fixed_line, "confidence": f.confidence}
+                            for f in _auto_fixes],
+                out_dir=audit.results_dir,
+            )
+            print(f"{Fore.GREEN}[✔] JSON report: {Fore.WHITE}{_json_path}")
+        except Exception as _json_err:
+            print(f"{Fore.YELLOW}[!] JSON output failed: {_json_err}{Style.RESET_ALL}")
+
+    # ── Generate HTML report (includes all v11.0 findings) ────────────────────
+    audit.save_final_summary()
+
+    # ── Final v11.0 summary banner ────────────────────────────────────────────
+    print(f"\n{Fore.CYAN}━━━  v11.0 Summary  ━━━{Style.RESET_ALL}")
     print(f"  AST engine           : {_TS_LABEL}")
     print(f"  Languages supported  : C, C++, Python, Java, Go, Rust, JS, TS, PHP, Ruby, C#, Kotlin, Swift, Scala")
     print(f"  SCA findings         : {len(sca_findings)} CVEs in dependencies")
@@ -1343,8 +1663,19 @@ if __name__ == "__main__":
     print(f"  Snippet matches      : {len(snippet_matches)}")
     print(f"  Secrets detected     : {len(secrets_findings)}")
     print(f"  SBOM components      : {len(all_deps)} dependencies documented")
+    print(f"  IaC findings         : {len(_iac_findings)}")
+    print(f"  Cross-file taint     : {len(_cross_file_findings)} flows")
+    print(f"  Container issues     : {len(_container_findings)}")
+    print(f"  Custom rule findings : {len(_custom_findings)}")
+    if _owasp_report:
+        print(f"  OWASP coverage       : {_owasp_report.coverage_pct:.0f}% ({_owasp_report.mapped_findings}/{_owasp_report.total_findings} mapped)")
+    if _auto_fixes:
+        print(f"  Auto-fix patches     : {len(_auto_fixes)}")
+    if _trend_data:
+        print(f"  Trend                : {_trend_data.trend}")
     if _diff_mode:
         print(f"  Diff mode            : {_diff_mode} ({len(_diff_files)} changed files)")
+    print(f"  Output format        : {_output_format}")
     print(f"  Remediation snippets : Enabled (Secure Alternative guidance in report)")
     print(f"  Advanced taint       : Source-to-sink with risk scoring")
 

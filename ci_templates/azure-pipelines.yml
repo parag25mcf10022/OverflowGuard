@@ -1,0 +1,74 @@
+# =============================================================================
+# OverflowGuard CI — Azure Pipelines
+# =============================================================================
+# Copy this file to azure-pipelines.yml in your project root.
+# =============================================================================
+
+trigger:
+  branches:
+    include:
+      - main
+      - feature/*
+
+pr:
+  branches:
+    include:
+      - main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  pythonVersion: '3.11'
+
+stages:
+  - stage: Test
+    jobs:
+      - job: UnitTests
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+
+          - script: |
+              sudo apt-get update -qq
+              sudo apt-get install -y -qq gcc g++ cppcheck git
+              pip install --upgrade pip -q
+              pip install -r requirements.txt -q
+            displayName: 'Install dependencies'
+
+          - script: |
+              python -m pytest tests/ -v --tb=short --junitxml=test-results.xml
+            displayName: 'Run tests'
+
+          - task: PublishTestResults@2
+            inputs:
+              testResultsFormat: 'JUnit'
+              testResultsFiles: 'test-results.xml'
+            condition: always()
+
+  - stage: SecurityScan
+    dependsOn: Test
+    jobs:
+      - job: OverflowGuardScan
+        steps:
+          - task: UsePythonVersion@0
+            inputs:
+              versionSpec: '$(pythonVersion)'
+
+          - script: |
+              sudo apt-get update -qq
+              sudo apt-get install -y -qq gcc g++ cppcheck clang-tidy git
+              pip install --upgrade pip -q
+              pip install -r requirements.txt -q
+            displayName: 'Install dependencies'
+
+          - script: |
+              echo "." | python main.py --format all
+            displayName: 'Run OverflowGuard scan'
+
+          - task: PublishBuildArtifacts@1
+            inputs:
+              pathToPublish: 'results/'
+              artifactName: 'OverflowGuard-Report'
+            condition: always()

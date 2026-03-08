@@ -1,8 +1,8 @@
-# 🛡️ OverflowGuard v10.0
+# 🛡️ OverflowGuard v11.0
 
 **Lead Researcher:** Parag Bagade  
 **GitHub:** [parag25mcf10022/OverflowGuard](https://github.com/parag25mcf10022/OverflowGuard)  
-**Status:** Production Ready — v10.0 (Differential Scanning + Remediation Guidance + Advanced Taint Analysis)
+**Status:**  v11.0 (IaC Scanning + Cross-file Taint + Container Security + OWASP Top 10 + Custom Rules + Auto-fix + JSON Output + Trend Tracking + CI Templates)
 
 ![CI](https://github.com/parag25mcf10022/OverflowGuard/actions/workflows/ci.yml/badge.svg)
 
@@ -12,7 +12,7 @@
 
 **OverflowGuard** is a polyglot security orchestration framework that detects, classifies, and reports memory-corruption and logic vulnerabilities across **14 programming languages**: C, C++, Python, Go, Rust, Java, JavaScript, TypeScript, PHP, Ruby, C#, Kotlin, Swift, and Scala.
 
-Unlike surface-level scanners that rely on regex pattern matching, OverflowGuard features **real AST parsing** (tree-sitter), **real dataflow analysis** on Control-Flow Graphs (reaching definitions, taint propagation with gen/kill semantics), **real symbolic execution** (Z3 SMT solver with bitvector arithmetic, path constraints, and counterexample generation), **context-aware false-positive filtering** (dominator-based sanitizer verification, dead-code elimination, test-code detection), **advanced source-to-sink taint analysis** (Checkmarx/CodeQL-style risk scoring), **differential scanning** (git-aware, only scan changed files), and **remediation guidance** (secure alternative code snippets for 28 vulnerability types).
+Unlike surface-level scanners that rely on regex pattern matching, OverflowGuard features **real AST parsing** (tree-sitter), **real dataflow analysis** on Control-Flow Graphs (reaching definitions, taint propagation with gen/kill semantics), **real symbolic execution** (Z3 SMT solver with bitvector arithmetic, path constraints, and counterexample generation), **context-aware false-positive filtering** (dominator-based sanitizer verification, dead-code elimination, test-code detection), **advanced source-to-sink taint analysis** (Checkmarx/CodeQL-style risk scoring), **differential scanning** (git-aware, only scan changed files), **remediation guidance** (secure alternative code snippets for 28 vulnerability types), **Infrastructure-as-Code scanning** (Terraform, Kubernetes, Docker, CloudFormation, Ansible), **cross-file taint analysis**, **container image scanning**, **OWASP Top 10 coverage reporting**, **custom rule engine**, **auto-fix patch generation**, **JSON machine-readable output**, **severity trend tracking**, and **CI/CD templates** for GitLab, Jenkins, Bitbucket, and Azure Pipelines.
 
 | Stage | Technology | What it covers |
 |---|---|---|
@@ -35,13 +35,38 @@ Unlike surface-level scanners that rely on regex pattern matching, OverflowGuard
 | 4 — Secrets Scan | `secrets_scanner.py` (30+ patterns + entropy) | All source + config files |
 | **★ GitHub** | **`github_scanner.py` (clone or Contents API)** | **Any public or private GitHub repo** |
 
-Output formats: **HTML dashboard** (with secure-alternative remediation cards), **SARIF 2.1.0** (GitHub Code Scanning / Azure DevOps), **CycloneDX 1.4 SBOM**.
+| Stage | Technology | What it covers |
+|---|---|---|
+| 7 — IaC Scanning | `iac_scanner.py` (44 rules, 5 frameworks) | Terraform, Kubernetes, Docker, CloudFormation, Ansible |
+| 8 — Cross-file Taint | `cross_file_taint.py` (file-level call graph) | C/C++, Python, Java, Go, Rust, JS/TS — multi-hop injection paths |
+| 9 — Container Scan | `container_scanner.py` (CIS Benchmark) | Dockerfiles, docker-compose.yml — 18 rules + EOL base image DB |
+| 10 — Custom Rules | `custom_rules.py` (YAML engine) | Any language — user-defined regex-based security rules |
+| 11 — OWASP Top 10 | `owasp_mapper.py` (200+ CWE mappings) | Maps all findings to OWASP Top 10 (2021) categories |
+| 12 — Auto-fix | `autofix.py` (unified diff patches) | C/C++, Python, Go, Java — 18 auto-fix patterns |
+| 13 — Trend Tracking | `trend_tracker.py` (SQLite) | Historical severity trends with quality gates |
+| 14 — JSON Output | `json_output.py` | Machine-readable JSON reports for CI/CD pipelines |
 
-Scan modes: **Full directory scan**, **single file**, **GitHub repo**, **differential scan** (git-aware, `--diff` flag).
+Output formats: **HTML dashboard** (with secure-alternative remediation cards + OWASP coverage), **SARIF 2.1.0** (GitHub Code Scanning / Azure DevOps), **CycloneDX 1.4 SBOM**, **JSON** (machine-readable for CI/CD).
+
+Scan modes: **Full directory scan**, **single file**, **GitHub repo**, **differential scan** (git-aware, `--diff` flag), **incremental scan** (dependency-cone, `--incremental` flag).
 
 ---
 
 ## ✨ Features
+
+### v11.0 — IaC Scanning, Cross-file Taint, Container Security, OWASP Top 10, Custom Rules, Auto-fix, JSON Output, Trend Tracking, CI Templates
+
+- **Project configuration** (`project_config.py`) — `.overflowguard.yml` config file with path exclusions, rule filtering, severity thresholds, language selection, and feature toggles; auto-discovers config by walking up the directory tree; generate a sample config with `--init-config`
+- **Infrastructure-as-Code scanning** (`iac_scanner.py`) — 44 security rules across **5 IaC frameworks**: Terraform (14 rules: S3 public access, unencrypted storage, open security groups, no logging, public IPs, etc.), Kubernetes (11 rules: privileged containers, host PID/network, missing resource limits, `latest` tag, etc.), Dockerfile (9 rules: `ADD` from URL, `curl | bash`, secrets in ENV, etc.), CloudFormation (6 rules: public S3, unencrypted RDS/EBS, wildcard IAM, open SGs), Ansible (4 rules: plaintext passwords, no_log missing, shell injection, HTTP downloads)
+- **Cross-file taint analysis** (`cross_file_taint.py`) — builds file-level call graphs from imports/includes across C/C++ (`#include`), Python (`import`/`from`), Java (`import`), Go (`import`), Rust (`use`/`mod`), and JavaScript/TypeScript (`import`/`require`); propagates taint findings across file boundaries to detect multi-hop injection paths; per-language source/sink databases
+- **Auto-fix patch generation** (`autofix.py`) — generates unified diff patches for 18 vulnerability patterns: C/C++ (7: `gets`→`fgets`, `strcpy`→`strncpy`, `sprintf`→`snprintf`, printf format, `system()`, `rand()`→`arc4random()`), Python (7: SQL injection, `os.system`, `eval`, `pickle`, weak-crypto, hardcoded-password, path-traversal), Go (2: SQL, `InsecureSkipVerify`), Java (2: `Statement`→`PreparedStatement`, weak-crypto); pass `--autofix` to generate a `.patch` file
+- **JSON machine-readable output** (`json_output.py`) — `--format json` produces a structured JSON report with summary, all findings, SCA, IaC, cross-file taint, auto-fixes, OWASP mapping, and trend data; ideal for CI/CD pipeline consumption and ASPM integration
+- **Severity trend tracking** (`trend_tracker.py`) — SQLite-backed historical scan database (`~/.overflowguard/trends.db`); records every scan with severity counts, git commit, and branch; compares current scan to previous and shows delta (↑/↓/→); **quality gate**: fails if critical or high findings increased; trend data included in JSON output
+- **Custom rule engine** (`custom_rules.py`) — YAML-based rule definitions in a `rules/` directory; each rule has an id, regex pattern, message, severity, language filter, CWE, and fix suggestion; generate sample rules with `--init-rules`; scan is automatically run when a `rules/` directory is detected
+- **Container & Dockerfile scanning** (`container_scanner.py`) — 18 CIS Docker Benchmark rules covering privilege escalation (running as root, `--privileged`), supply-chain attacks (`curl | bash`, `ADD` from URL), network exposure (SSH port 22, database ports), secrets in images (`.env`, `.pem`, hardcoded ENV passwords), and best practices (unpinned base images, missing `HEALTHCHECK`, `apt-get` cache cleanup); 25-entry EOL/vulnerable base image database; docker-compose.yml scanning (privileged mode, host networking, dangerous mounts)
+- **Incremental cross-file analysis** (`incremental_analysis.py`) — combines git diff with dependency-cone analysis: only re-analyzes changed files plus files that import/include them; BFS through reverse-dependency graph; reports scan savings percentage; pass `--incremental` to enable
+- **OWASP Top 10 (2021) coverage report** (`owasp_mapper.py`) — maps all findings to OWASP Top 10 categories using a 200+ CWE-to-OWASP mapping table plus keyword-based fallback; generates CLI table and HTML fragment showing coverage percentage, per-category finding counts, and severity breakdown; included in JSON output
+- **CI/CD pipeline templates** (`ci_templates/`) — ready-to-use pipeline configurations for **GitLab CI** (4 stages: test, scan, diff-scan, pages), **Jenkins** (declarative pipeline, 4 stages with JUnit + HTML publisher), **Bitbucket Pipelines** (default + PR + branch pipelines), and **Azure Pipelines** (2 stages with JUnit publish and build artifacts)
 
 ### v10.0 — Differential Scanning, Remediation Guidance, Advanced Taint
 
@@ -196,6 +221,34 @@ python3 main.py --diff last-tag
 python3 main.py --diff --diff-only
 ```
 
+### v11.0 new CLI options
+
+```bash
+# Generate JSON output (for CI/CD pipelines)
+python3 main.py --format json samples/
+
+# Generate auto-fix patch file
+python3 main.py --autofix samples/
+
+# Incremental scan (only changed files + dependency cone)
+python3 main.py --incremental samples/
+
+# Set minimum severity threshold
+python3 main.py --severity high samples/
+
+# Disable specific scan stages
+python3 main.py --no-iac --no-container samples/
+
+# Use custom rules from a specific directory
+python3 main.py --rules-dir /path/to/rules samples/
+
+# Generate sample configuration file
+python3 main.py --init-config
+
+# Generate sample custom rules
+python3 main.py --init-rules
+```
+
 ### Run the standalone fuzzer
 
 ```bash
@@ -214,7 +267,7 @@ python3 -m pytest tests/ -v
 ## 📊 Example Terminal Output
 
 ```
-⛔  OVERFLOW GUARD v10.0 | Researcher: Parag Bagade
+⛔  OVERFLOW GUARD v11.0 | Researcher: Parag Bagade
 
 ┌─────────────────────────────────────────────────────────────────┐
 │ ANALYZING: sample.c                                               │
@@ -223,23 +276,32 @@ python3 -m pytest tests/ -v
 [!!!] RealDataflow [High] use-after-free @ line 23
 [!!!] RealDataflow [Medium] buffer-overflow @ line 21
 [~] Symbolic(Z3) [High] buffer-overflow @ line 13 — Z3 proved: strcpy overflow
-[~] Symbolic(interval) [High] buffer-overflow @ line 9 — index > buffer size
-[!!!] AST: [HIGH] stack-buffer-overflow @ line 13 — Dangerous call to strcpy()
-[!!!] AST: [HIGH] use-after-free @ line 23 — Pointer 'ptr' used after free()
-[!] cppcheck: [error] Array 'ptr[10]' accessed at index 49 @ line 21
 [!!!] AdvancedTaint [8.0/10] stack-buffer-overflow @ line 6 — gets → stack buffer
     💡 Remediation: Replace gets() with fgets(buf, sizeof(buf), stdin)
-[!!!] Concolic [HIGH] stack-buffer-overflow @ line 13 — Heuristic fuzzing crash
 
-───  v10.0 Summary  ───
+━━━  Stage 7: Infrastructure-as-Code (IaC) Scanning  ━━━
+  [iac] scanning main.tf
+  IaC Summary: 3 issues (1 high, 2 medium) across 1 file(s)
+
+━━━  Stage 8: Cross-file Taint Analysis  ━━━
+  [✔] Cross-file taint: 2 cross-boundary flows detected
+
+━━━  Stage 11: OWASP Top 10 (2021) Coverage Report  ━━━
+  A01:2021  Broken Access Control          0 findings  ✗ No findings
+  A03:2021  Injection                      5 findings  ✓ COVERED (2 critical, 3 high)
+  A05:2021  Security Misconfiguration      3 findings  ✓ COVERED (1 high, 2 medium)
+  Coverage: 40% (8/12 findings mapped)
+
+━━━  v11.0 Summary  ━━━
   AST engine           : AST(tree‑sitter)
-  Languages supported  : C, C++, Python, Java, Go, Rust, JS, TS, PHP, Ruby, C#
-  Diff mode            : full (use --diff for incremental)
-  Remediation          : 28 vuln types with secure alternatives
-  Advanced taint       : source→sink with CVSS risk scoring
+  Languages supported  : C, C++, Python, Java, Go, Rust, JS, TS, PHP, Ruby, C#, Kotlin, Swift, Scala
   SCA findings         : 0 CVEs in dependencies
-  Secrets detected     : 0
-  SBOM components      : 0 dependencies documented
+  IaC findings         : 3
+  Cross-file taint     : 2 flows
+  Container issues     : 0
+  OWASP coverage       : 40%
+  Auto-fix patches     : 2
+  Output format        : html
 ```
 
 ---
@@ -321,6 +383,12 @@ z3-solver>=4.12.0        # real_symbolic.py (Z3 SMT solver)
 # remediation_db.py  — pure Python dataclass DB — stdlib only
 # advanced_taint.py  — reuses tree-sitter (already installed above)
 
+# v11.0 — No additional pip dependencies required
+# All v11.0 modules use only the Python standard library (os, re, json,
+# sqlite3, subprocess, dataclasses). PyYAML is optional for project_config.py
+# and custom_rules.py — a built-in YAML parser handles simple configs.
+PyYAML>=6.0              # optional: for .overflowguard.yml and custom rules
+
 # Optional — advanced analysis (gracefully skipped when absent)
 scikit-learn>=1.3.0      # ml_filter.py
 angr>=9.2                # concolic_fuzzer.py  (~1 GB)
@@ -331,6 +399,8 @@ The SCA, secrets, SBOM, and SARIF modules use only the Python standard library (
 The v9.0 real-analysis engine uses individual `tree-sitter-*` grammar wheels (11 languages). Without them, the tool gracefully falls back to regex-based analysis. Z3 (`z3-solver`) enables proven symbolic execution findings with counterexamples; without it the engine falls back to interval abstract interpretation.
 
 The v10.0 modules (`diff_scanner.py`, `remediation_db.py`, `advanced_taint.py`) require **no additional pip packages** — they use the Python standard library and reuse tree-sitter grammars already installed for v9.0. The diff scanner requires `git` to be available on `$PATH`.
+
+The v11.0 modules (`project_config.py`, `iac_scanner.py`, `cross_file_taint.py`, `autofix.py`, `json_output.py`, `trend_tracker.py`, `custom_rules.py`, `container_scanner.py`, `incremental_analysis.py`, `owasp_mapper.py`) require **no additional pip packages** — they use only the Python standard library. `PyYAML` is optional (a built-in parser handles simple YAML configs). Trend tracking uses SQLite (stdlib `sqlite3`).
 
 ### System tools
 
@@ -380,6 +450,7 @@ The repository ships with a **GitHub Actions** workflow (`.github/workflows/ci.y
 
 | Version | Date | Highlights |
 |---|---|---|
+| **v11.0** | 2026-03-09 | **12 new features**: Project config (`.overflowguard.yml`); **IaC scanning** (Terraform, K8s, Docker, CloudFormation, Ansible — 44 rules); **cross-file taint** (file-level call graph, multi-hop injection); **auto-fix patch generation** (18 patterns, unified diff); **JSON output** (`--format json`); **severity trend tracking** (SQLite, quality gates); **custom rule engine** (YAML, `--init-rules`); **container scanning** (CIS Docker Benchmark, 18 rules, EOL base image DB); **incremental analysis** (dependency-cone, `--incremental`); **OWASP Top 10 mapping** (200+ CWE mappings, coverage report); **CI templates** (GitLab, Jenkins, Bitbucket, Azure); 10 new Python modules, 4 CI template files |
 | **v10.0** | 2026-03-08 | **Differential scanning** (`diff_scanner.py` — git-aware, 5 diff modes, `--diff` CLI flag); **remediation guidance** (`remediation_db.py` — 28 vuln types with secure-alternative snippets in HTML + CLI); **advanced source-to-sink taint** (`advanced_taint.py` — Checkmarx/CodeQL-style, CVSS risk scoring 0–10, dual CFG + regex engine, per-language source/sink/sanitizer DBs) |
 | **v9.0** | 2026-03-07 | **Real AST parsing** (tree-sitter, 14 languages); **real CFG-based dataflow** (reaching definitions, taint with gen/kill, fixpoint iteration); **real symbolic execution** (Z3 bitvector, path constraints, counterexamples); **dominator-based FP filter** (sanitizer guard verification, dead-code elimination); 5 new modules (`tree_sitter_engine.py`, `cfg_builder.py`, `real_dataflow.py`, `real_symbolic.py`, `false_positive_filter.py`); 8 new languages (JS, TS, PHP, Ruby, C#, Kotlin, Swift, Scala) |
 | **v8.1** | 2026-03-07 | `github_scanner.py` — scan any GitHub repo by URL/shorthand; git-clone + Contents API fallback; private repo support via GITHUB_TOKEN; full 6-stage pipeline runs on downloaded code |

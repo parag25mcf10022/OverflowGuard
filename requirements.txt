@@ -43,6 +43,24 @@ z3-solver>=4.12.0
 # diff_scanner.py    — uses subprocess (git CLI) — stdlib only
 # remediation_db.py  — pure Python dataclass DB — stdlib only
 # advanced_taint.py  — reuses tree-sitter (already listed above)
+
+# ── v11.0 ── Optional: PyYAML for project config and custom rules ────
+# All v11.0 modules use only the Python standard library.
+# PyYAML is optional — a built-in YAML parser handles simple configs.
+PyYAML>=6.0
+
+# ── v11.0 modules (stdlib only — no new pip dependencies) ────────────
+# project_config.py      — .overflowguard.yml config loader
+# iac_scanner.py          — IaC scanning (Terraform/K8s/Docker/CFn/Ansible)
+# cross_file_taint.py     — Cross-file taint analysis
+# autofix.py              — Auto-fix patch generation
+# json_output.py          — JSON machine-readable output
+# trend_tracker.py        — SQLite-backed severity trend tracking
+# custom_rules.py         — YAML-based custom rule engine
+# container_scanner.py    — Dockerfile & container image scanning
+# incremental_analysis.py — Incremental dependency-cone analysis
+# owasp_mapper.py         — OWASP Top 10 (2021) coverage mapping
+
 # ml_filter.py       — ML false-positive filter (RandomForest)
 # scikit-learn>=1.3.0
 

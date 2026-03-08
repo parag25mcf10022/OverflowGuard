@@ -1,0 +1,111 @@
+// =============================================================================
+// OverflowGuard CI — Jenkins Declarative Pipeline
+// =============================================================================
+// Copy this file to your project root as 'Jenkinsfile'.
+//
+// Features:
+//   - Python unit tests
+//   - Full OverflowGuard security scan
+//   - SARIF + HTML artifact archiving
+//   - Quality gate (configurable severity threshold)
+//
+// Prerequisites:
+//   - Python 3.9+ installed on Jenkins agent
+//   - gcc, cppcheck available on agent
+// =============================================================================
+
+pipeline {
+    agent any
+
+    environment {
+        PYTHON = 'python3'
+        SEVERITY_THRESHOLD = 'HIGH'
+    }
+
+    options {
+        timeout(time: 30, unit: 'MINUTES')
+        buildDiscarder(logRotator(numToKeepStr: '10'))
+    }
+
+    stages {
+        // -----------------------------------------------------------------
+        // 1. Setup
+        // -----------------------------------------------------------------
+        stage('Setup') {
+            steps {
+                sh '''
+                    ${PYTHON} -m venv .venv
+                    . .venv/bin/activate
+                    pip install --upgrade pip -q
+                    pip install -r requirements.txt -q
+                '''
+            }
+        }
+
+        // -----------------------------------------------------------------
+        // 2. Unit Tests
+        // -----------------------------------------------------------------
+        stage('Test') {
+            steps {
+                sh '''
+                    . .venv/bin/activate
+                    ${PYTHON} -m pytest tests/ -v --tb=short --junitxml=test-results.xml
+                '''
+            }
+            post {
+                always {
+                    junit 'test-results.xml'
+                }
+            }
+        }
+
+        // -----------------------------------------------------------------
+        // 3. Security Scan
+        // -----------------------------------------------------------------
+        stage('Security Scan') {
+            steps {
+                sh '''
+                    . .venv/bin/activate
+                    echo "." | ${PYTHON} main.py --format all --severity-threshold ${SEVERITY_THRESHOLD}
+                '''
+            }
+            post {
+                always {
+                    archiveArtifacts artifacts: 'results/**', fingerprint: true
+                    publishHTML(target: [
+                        allowMissing: true,
+                        alwaysLinkToLastBuild: true,
+                        keepAll: true,
+                        reportDir: 'results',
+                        reportFiles: '*.html',
+                        reportName: 'OverflowGuard Security Report'
+                    ])
+                }
+            }
+        }
+
+        // -----------------------------------------------------------------
+        // 4. Differential Scan (PRs only)
+        // -----------------------------------------------------------------
+        stage('Diff Scan') {
+            when {
+                changeRequest()
+            }
+            steps {
+                sh '''
+                    . .venv/bin/activate
+                    echo "." | ${PYTHON} main.py --diff head --diff-only --format json
+                '''
+            }
+        }
+    }
+
+    post {
+        always {
+            cleanWs()
+        }
+        failure {
+            echo 'OverflowGuard security scan found findings above threshold!'
+        }
+    }
+}

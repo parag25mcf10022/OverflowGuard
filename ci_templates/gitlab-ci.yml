@@ -1,0 +1,95 @@
+# =============================================================================
+# OverflowGuard CI — GitLab CI/CD
+# =============================================================================
+# Copy this file to .gitlab-ci.yml in your project root.
+#
+# Features:
+#   - Python unit tests
+#   - Full OverflowGuard security scan
+#   - SARIF + JSON artifact upload
+#   - Quality gate (fails on CRITICAL/HIGH findings)
+#
+# Requires: GITHUB_TOKEN variable for private repo scanning (optional)
+# =============================================================================
+
+stages:
+  - test
+  - scan
+  - report
+
+variables:
+  PIP_CACHE_DIR: "$CI_PROJECT_DIR/.pip-cache"
+  OVERFLOWGUARD_VERSION: "v11.0"
+
+# ---------------------------------------------------------------------------
+# 1. Unit tests
+# ---------------------------------------------------------------------------
+test:
+  stage: test
+  image: python:3.11-slim
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq gcc g++ cppcheck git
+    - pip install --upgrade pip -q
+    - pip install -r requirements.txt -q
+  script:
+    - python -m pytest tests/ -v --tb=short
+  cache:
+    key: pip-cache
+    paths:
+      - .pip-cache/
+
+# ---------------------------------------------------------------------------
+# 2. OverflowGuard full security scan
+# ---------------------------------------------------------------------------
+security-scan:
+  stage: scan
+  image: python:3.11-slim
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq gcc g++ cppcheck clang-tidy git
+    - pip install --upgrade pip -q
+    - pip install -r requirements.txt -q
+  script:
+    - echo "." | python main.py --format all --severity-threshold HIGH
+  artifacts:
+    when: always
+    paths:
+      - results/
+    reports:
+      # GitLab SAST integration (requires Ultimate tier for native support)
+      sast: results/*.sarif
+  allow_failure: false
+
+# ---------------------------------------------------------------------------
+# 3. Differential scan (merge request only)
+# ---------------------------------------------------------------------------
+diff-scan:
+  stage: scan
+  image: python:3.11-slim
+  only:
+    - merge_requests
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq gcc g++ cppcheck git
+    - pip install --upgrade pip -q
+    - pip install -r requirements.txt -q
+  script:
+    - echo "." | python main.py --diff head --diff-only --format json
+  artifacts:
+    when: always
+    paths:
+      - results/*.json
+
+# ---------------------------------------------------------------------------
+# 4. Upload reports
+# ---------------------------------------------------------------------------
+pages:
+  stage: report
+  dependencies:
+    - security-scan
+  script:
+    - mkdir -p public
+    - cp results/*.html public/ 2>/dev/null || true
+  artifacts:
+    paths:
+      - public
+  only:
+    - main
