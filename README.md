@@ -472,6 +472,9 @@ MIT License — see [LICENSE](LICENSE) for details.
 
 ---
 
+### False Positives
+Like all SAST tools, OverflowGuard produces false positives. The false-positive filter (false_positive_filter.py) uses dominator-based sanitizer verification to reduce noise, but manual review of findings is always recommended. Ongoing work on reducing FP rates is tracked in the issues section
+
 ## ⚠️ Disclaimer
 
 This tool is intended for **authorized security research and educational purposes only**.  
