@@ -5,6 +5,10 @@
 **Status:**  v11.0 (IaC Scanning + Cross-file Taint + Container Security + OWASP Top 10 + Custom Rules + Auto-fix + JSON Output + Trend Tracking + CI Templates)
 
 ![CI](https://github.com/parag25mcf10022/OverflowGuard/actions/workflows/ci.yml/badge.svg)
+![Python](https://img.shields.io/badge/python-3.8+-blue)
+![Languages](https://img.shields.io/badge/languages-14-green)
+![License](https://img.shields.io/badge/license-MIT-blue)
+![Version](https://img.shields.io/badge/version-11.0-red)
 
 ---
 
