@@ -1705,6 +1705,22 @@ if __name__ == "__main__":
     try:
         print(f"\n{Fore.CYAN}━━━  Stage 13: Severity Trend Tracking  ━━━{Style.RESET_ALL}")
         _tracker = TrendTracker()
+        # Recompute stats from final report_data accurately
+        final_stats = {"scanned": audit.stats.get("scanned", 0), "CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
+        for findings in audit.report_data.values():
+            for f in findings:
+                sev = audit._normalize_severity(f.get("severity", ""), f.get("confidence", ""))
+                final_stats[sev] = final_stats.get(sev, 0) + 1
+        audit.stats = final_stats
+        
+        # Recompute stats from final report_data accurately
+        final_stats = {"scanned": audit.stats.get("scanned", 0), "CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
+        for findings in audit.report_data.values():
+            for f in findings:
+                sev = audit._normalize_severity(f.get("severity", ""), f.get("confidence", ""))
+                final_stats[sev] = final_stats.get(sev, 0) + 1
+        audit.stats = final_stats
+        
         _current_scan = _tracker.record_scan(
             project=proj_name,
             target=path_input,
