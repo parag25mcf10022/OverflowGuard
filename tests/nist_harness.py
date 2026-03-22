@@ -14,6 +14,7 @@ This harness is lightweight and uses only the standard library.
 
 from __future__ import annotations
 
+import re
 import json
 import subprocess
 import sys
@@ -22,7 +23,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Set, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
-NIST_ROOT = ROOT / "samples"
+NIST_ROOT = ROOT / "nist-samples"
 RESULTS_DIR = ROOT / "results"
 
 
@@ -58,28 +59,58 @@ class Metrics:
 
 
 def _load_sarif_findings(path: Path) -> Set[Finding]:
-    """Parse SARIF file into a set of (cwe, file, line)."""
-
     if not path.exists() or path.stat().st_size == 0:
         return set()
     try:
         data = json.loads(path.read_text())
     except json.JSONDecodeError:
         return set()
+        
     results = data.get("runs", [{}])[0].get("results", [])
-    findings: Set[Finding] = set()
+    findings = set()
     for res in results:
-        props = res.get("properties", {})
-        cwe = props.get("cwe", "") or props.get("tags", [""])[0]
-        cwe_norm = _normalize_cwe(cwe)
-        locations = res.get("locations", [])
-        if not locations:
+        if res.get("kind") == "pass":
             continue
-        phys = locations[0].get("physicalLocation", {})
-        artifact = phys.get("artifactLocation", {})
-        rel_path = artifact.get("uri", "")
-        line = phys.get("region", {}).get("startLine", 0) or 0
-        findings.add(Finding(cwe=cwe_norm, file=rel_path, line=int(line)))
+            
+        cwe = ""
+        rule_id = res.get("ruleId", "")
+        if "CWE" in str(rule_id).upper(): cwe = rule_id
+            
+        props = res.get("properties", {})
+        if not cwe: cwe = props.get("cwe", "")
+        if not cwe and props.get("tags"): cwe = props.get("tags")[0]
+             
+        if not cwe:
+            for taxa in res.get("taxa", []):
+                if taxa.get("toolComponent", {}).get("name") == "CWE":
+                    cwe = "CWE-" + str(taxa.get("id", ""))
+                    break
+                    
+        if not cwe:
+            msg = res.get("message", {}).get("text", "")
+            m = re.search(r'(CWE-\d+)', msg, re.IGNORECASE)
+            if m: cwe = m.group(1).upper()
+
+        cwe_norm = _normalize_cwe(cwe)
+        
+        locs = res.get("locations", [])
+        if not locs and res.get("codeFlows"):
+            try: locs = res.get("codeFlows")[0].get("threadFlows")[0].get("locations", [])
+            except: pass
+                
+        for loc in locs:
+            phys = loc.get("physicalLocation", {})
+            if not phys and loc.get("location"):
+                phys = loc.get("location", {}).get("physicalLocation", {})
+                
+            artifact = phys.get("artifactLocation", {})
+            uri = artifact.get("uri", "")
+            file_basename = Path(uri).name
+            
+            line = phys.get("region", {}).get("startLine", 0) or 0
+            if file_basename and line > 0 and cwe_norm:
+                findings.add(Finding(cwe=cwe_norm, file=file_basename, line=int(line)))
+                
     return findings
 
 
@@ -111,10 +142,31 @@ def _run_scan(suite_dir: Path) -> Path:
 
 
 def _compare(gt: Set[Finding], pred: Set[Finding]) -> Metrics:
-    tp = len(gt & pred)
-    fp = len(pred - gt)
-    fn = len(gt - pred)
-    return Metrics(tp=tp, fp=fp, fn=fn)
+    print("\n--- Matches ---")
+    
+    tp_set = gt & pred
+    fp_set = pred - gt
+    fn_set = gt - pred
+    
+    # Try to match simply by file and line to see what CWE mismatch occurred
+    pred_by_loc = {(f.file, f.line): f for f in pred}
+    
+    for g in gt:
+        if g in pred:
+            print(f"MATCH (TP): Expected file={g.file} CWE={g.cwe} line={g.line}")
+        else:
+            match_loc = pred_by_loc.get((g.file, g.line))
+            if match_loc:
+                print(f"MISS (FN) - CWE Mismatch: Expected CWE={g.cwe}, Got CWE={match_loc.cwe} at file={g.file} line={g.line}")
+            else:
+                print(f"MISS (FN): Expected file={g.file} CWE={g.cwe} line={g.line}")
+                
+    for p in fp_set:
+        print(f"EXTRA (FP): Found file={p.file} CWE={p.cwe} line={p.line}")
+
+    print("-----------------\n")
+
+    return Metrics(tp=len(tp_set), fp=len(fp_set), fn=len(fn_set))
 
 
 def evaluate_suite(suite_dir: Path) -> Tuple[Metrics, Set[Finding], Set[Finding]]:
