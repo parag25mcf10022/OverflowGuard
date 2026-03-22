@@ -503,12 +503,12 @@ class AuditManager:
             else:
                 safe_files.append(entry)
 
-        total_files    = self.stats["scanned"]
+        total_files    = max(self.stats.get("scanned", 0), len(self.report_data))
         total_findings = sum(len(f) for _, f, _ in vulnerable_files + safe_files)
 
         # ── per-file detail table ─────────────────────────────────────────────
-        col_file = 30
-        col_tot  = 8
+        col_file = 42
+        col_tot  = 6
         col_sev  = 10   # per severity column
 
         header = (
@@ -522,7 +522,24 @@ class AuditManager:
         hline()
 
         def print_row(fpath, findings, counts):
-            name   = os.path.basename(fpath)[:col_file]
+            try:
+                rel = os.path.relpath(fpath, os.getcwd())
+            except ValueError:
+                rel = fpath
+            if rel.startswith("./"): rel = rel[2:]
+            
+            # Show parent dir if it's a common name like Dockerfile
+            parts = rel.split(os.sep)
+            if len(parts) > 1 and parts[-1] in ("Dockerfile", "manifest.sarif", "package.json", "Makefile"):
+                name = f"{parts[-2]}/{parts[-1]}"
+            else:
+                name = rel
+            
+            if len(name) > col_file:
+                name = "..." + name[-(col_file-3):]
+            else:
+                name = name[:col_file]
+
             total  = len(findings)
             crit   = counts.get("CRITICAL", 0)
             high   = counts.get("HIGH",     0)
