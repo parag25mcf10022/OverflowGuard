@@ -81,7 +81,7 @@ def _analyze_c(src: str, src_lines: List[str]) -> List[ConcurrencyFinding]:
         # Is this a file-scope (global) declaration?  Heuristic: line is not indented
         ln    = _lineno(src, m.start())
         line_text = src_lines[ln - 1] if ln <= len(src_lines) else ""
-        if not line_text.startswith((" ", "\t")):  # top-level
+        if not line_text.startswith((" ", "\t")) and not line_text.lstrip().startswith(("//", "/*", "#", "*")):  # top-level
             varname = m.group(1)
             # Find writes to this var inside threaded functions
             write_pat = re.compile(rf"\b{re.escape(varname)}\s*(?:\+\+|--|[\+\-\*\/\|&\^]?=)")

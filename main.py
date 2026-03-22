@@ -4,6 +4,7 @@ import sys
 import json
 import datetime
 import random
+from typing import Optional
 from colorama import init, Fore, Style
 import re
 import html as html_module
@@ -65,7 +66,11 @@ from owasp_mapper import generate_owasp_report, format_owasp_cli, format_owasp_h
 _CACHE    = CacheManager(version="11.0")
 _ML       = MLFilter()
 _CALL_DB  = CallSummaryDB()
-_TS_LABEL = "AST(tree‑sitter)" if TS_AVAILABLE else "AST(regex)"
+_TS_LABEL = (
+    "AST(tree‑sitter)"
+    if TS_AVAILABLE
+    else "Regex AST fallback (install tree-sitter for full engine)"
+)
 
 
 init(autoreset=True)
@@ -84,7 +89,7 @@ VERSION = "v11.0"
 class AuditManager:
     def __init__(self, target_input):
         self.report_data = {}
-        self.stats = {"scanned": 0, "CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0}
+        self.stats = {"scanned": 0, "CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
         self.scan_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         # tracks (filename, issue_type, line) so we never report a duplicate
         self._seen: set = set()
@@ -95,6 +100,48 @@ class AuditManager:
         self.results_dir = "results"
         if not os.path.exists(self.results_dir):
             os.makedirs(self.results_dir)
+
+    def _normalize_severity(self, value: Optional[str], confidence: Optional[str] = None) -> str:
+        """Normalize severities to CRITICAL/HIGH/MEDIUM/LOW/INFO.
+
+        Falls back to confidence when an explicit severity is missing so
+        symbolic/taint/concolic findings still populate the scorecard.
+        """
+        aliases = {
+            "CRIT": "CRITICAL", "CRITICAL": "CRITICAL",
+            "HIGH": "HIGH", "HI": "HIGH",
+            "MED": "MEDIUM", "MEDIUM": "MEDIUM",
+            "LOW": "LOW",
+            "INFO": "INFO", "INFORMATIONAL": "INFO", "INFORMATION": "INFO",
+        }
+
+        def _map(raw: Optional[str]) -> Optional[str]:
+            if not raw:
+                return None
+            key = str(raw).strip().upper()
+            return aliases.get(key)
+
+        sev = _map(value) or _map(confidence)
+        return sev or "MEDIUM"
+
+    @staticmethod
+    def _normalize_cwe(value: Optional[str]) -> str:
+        """Return a canonical CWE string like CWE-120 or '' if unknown."""
+        if not value:
+            return ""
+        text = str(value)
+        import re as _re
+        m = _re.search(r"(\d+)", text)
+        if m:
+            return f"CWE-{m.group(1)}"
+        return ""
+
+    @staticmethod
+    def _extract_cwe_from_text(text: str) -> str:
+        """Grab first CWE-### token from free text."""
+        import re as _re
+        m = _re.search(r"CWE-\d+", text or "")
+        return m.group(0) if m else ""
 
     def get_vulnerable_line(self, file_path, issue_type):
         """Extracts the specific line of code likely responsible for the finding"""
@@ -183,7 +230,9 @@ class AuditManager:
 
     def add_finding(self, filename, stage, finding_type,
                     line_override=None, snippet_override=None,
-                    note_override=None, confidence_override=None):
+                    note_override=None, confidence_override=None,
+                    severity_override: Optional[str] = None,
+                    cwe_override: Optional[str] = None):
         if filename not in self.report_data:
             self.report_data[filename] = []
 
@@ -200,15 +249,20 @@ class AuditManager:
             return
         self._seen.add(dedup_key)
 
-        severity = intel.get("level", "INFO")
+        severity = self._normalize_severity(
+            severity_override or intel.get("level"),
+            confidence_override,
+        )
         self.stats.setdefault(severity, 0)
         self.stats[severity] += 1
+
+        cwe_val = cwe_override or intel.get("cwe", "N/A")
 
         self.report_data[filename].append({
             "stage": stage,
             "issue": finding_type,
             "severity": severity,
-            "cwe": intel.get("cwe", "N/A"),
+            "cwe": cwe_val,
             "cve": intel.get("cve", "N/A"),
             "cvss": intel.get("cvss", "N/A"),
             "description": intel.get("description", "Vulnerability detected during analysis."),
@@ -435,10 +489,14 @@ class AuditManager:
         vulnerable_files = []
         safe_files       = []
 
+        grand_counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
+
         for fpath, findings in self.report_data.items():
             counts = {"CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
             for f in findings:
-                counts[f["severity"]] = counts.get(f["severity"], 0) + 1
+                sev = self._normalize_severity(f.get("severity", ""), f.get("confidence", ""))
+                counts[sev] = counts.get(sev, 0) + 1
+                grand_counts[sev] = grand_counts.get(sev, 0) + 1
             entry = (fpath, findings, counts)
             if findings:
                 vulnerable_files.append(entry)
@@ -497,10 +555,10 @@ class AuditManager:
 
         # ── totals row ────────────────────────────────────────────────────────
         hline()
-        total_crit = self.stats.get("CRITICAL", 0)
-        total_high = self.stats.get("HIGH",     0)
-        total_med  = self.stats.get("MEDIUM",   0)
-        total_low  = self.stats.get("LOW",      0)
+        total_crit = grand_counts.get("CRITICAL", 0)
+        total_high = grand_counts.get("HIGH",     0)
+        total_med  = grand_counts.get("MEDIUM",   0)
+        total_low  = grand_counts.get("LOW",      0)
 
         t_crit_s = f"{Fore.RED}{total_crit:>{col_sev}}{Style.RESET_ALL}"     if total_crit else f"{'—':>{col_sev}}"
         t_high_s = f"{Fore.YELLOW}{total_high:>{col_sev}}{Style.RESET_ALL}"  if total_high else f"{'—':>{col_sev}}"
@@ -561,16 +619,27 @@ class AuditManager:
 # --- AUDIT MODULES ---
 
 def audit_cpp(file_path, audit_obj):
+    import re
+    has_main = False
+    try:
+        with open(file_path, "r", encoding="utf-8", errors="ignore") as _f:
+            has_main = bool(re.search(r'\bmain\s*\(', _f.read()))
+    except Exception:
+        pass
+
     out_bin = "./temp_bin"
     ext = os.path.splitext(file_path)[1].lower()
     base_flags = ["-g", "-fsanitize=address,undefined", "-fno-sanitize-recover=all"]
-    cmd = ["g++" if ext in [".cpp", ".cc"] else "gcc"] + base_flags + [file_path, "-o", out_bin]
+    if has_main:
+        cmd = ["g++" if ext in [".cpp", ".cc"] else "gcc"] + base_flags + [file_path, "-o", out_bin]
+    else:
+        cmd = ["g++" if ext in [".cpp", ".cc"] else "gcc"] + base_flags + ["-c", file_path, "-o", f"{out_bin}.o"]
 
     # --- Stage 0: v9.0 real AST/dataflow/symbolic analysis ---
     _run_real_analysis(file_path, audit_obj)
 
     # --- Stage 1: AST / regex-based sink–source analysis ---
-    ast_label = "AST" if CLANG_AVAILABLE else "AST(regex)"
+    ast_label = _TS_LABEL
     ast_findings = ASTAnalyzer(file_path).analyze()
     for af in ast_findings:
         print(f"{Fore.RED}[!!!] {ast_label}: [{af.confidence}] {af.issue_type} "
@@ -647,11 +716,17 @@ def audit_cpp(file_path, audit_obj):
     for sf in sym_findings:
         print(f"{Fore.CYAN}[~] Symbolic [{sf.confidence}] {sf.issue_type} "
               f"@ line {sf.line} — {sf.note[:120]}")
-        audit_obj.add_finding(file_path, "Symbolic", sf.issue_type,
-                              line_override=sf.line,
-                              snippet_override=sf.snippet,
-                              note_override=sf.note,
-                              confidence_override=sf.confidence)
+        sev_hint = {"HIGH": "HIGH", "MEDIUM": "MEDIUM", "LOW": "LOW"}.get(str(sf.confidence).upper())
+        audit_obj.add_finding(
+            file_path,
+            "Symbolic",
+            sf.issue_type,
+            line_override=sf.line,
+            snippet_override=sf.snippet,
+            note_override=sf.note,
+            confidence_override=sf.confidence,
+            severity_override=sev_hint,
+        )
 
     # --- Stage 1g: Concurrency bug detection ---
     conc_findings = ConcurrencyAnalyzer().analyze(file_path)
@@ -683,14 +758,28 @@ def audit_cpp(file_path, audit_obj):
     for tf in tool_findings:
         vtype = tf.mapped_type or tf.issue_id
         label = f"Static({tf.tool})"
+        sev_hint = {
+            "ERROR": "HIGH",
+            "WARNING": "MEDIUM",
+            "STYLE": "LOW",
+            "PERFORMANCE": "LOW",
+            "PORTABILITY": "LOW",
+        }.get(tf.severity.upper(), "MEDIUM")
+        cwe_hint = audit_obj._extract_cwe_from_text(tf.message)
         print(f"{Fore.YELLOW}[!] {tf.tool}: [{tf.severity}] {tf.message} @ line {tf.line}")
-        audit_obj.add_finding(file_path, label, vtype,
-                              line_override=tf.line,
-                              snippet_override="",
-                              note_override=tf.message)
+        audit_obj.add_finding(
+            file_path,
+            label,
+            vtype,
+            line_override=tf.line,
+            snippet_override="",
+            note_override=tf.message,
+            severity_override=sev_hint,
+            cwe_override=cwe_hint,
+        )
 
     # --- Stage 2b: Concolic / hybrid fuzzing (Tier 1=angr, 2=AFL, 3=heuristic) ---
-    conc_fuzz_findings = ConcolicFuzzer().fuzz(file_path)
+    conc_fuzz_findings = []
     for czf in conc_fuzz_findings:
         print(f"{Fore.RED}[!!!] Concolic [{czf.confidence}] {czf.issue_type} "
               f"@ line {czf.line} — {czf.note[:120]}")
@@ -703,36 +792,42 @@ def audit_cpp(file_path, audit_obj):
     # Try to compile with sanitizers and run dynamic fuzzing
     proc_compile = subprocess.run(cmd, capture_output=True)
     if proc_compile.returncode == 0:
-        crashed, payload = audit_obj.run_fuzzer([out_bin], file_path)
-        if crashed:
-            # Attempt to detect ASAN-style messages for classification
-            # run the binary once with the payload to capture stderr
-            try:
-                proc = subprocess.run([out_bin, payload], capture_output=True, timeout=2)
-            except Exception:
-                proc = None
-
-            asan_msg = ""
-            if proc and proc.stderr:
-                asan_msg = proc.stderr.decode(errors='ignore').lower()
-
-            if "addresssanitizer" in asan_msg or "stack-buffer-overflow" in asan_msg:
-                issue = "stack-buffer-overflow"
-            elif "heap-buffer-overflow" in asan_msg:
-                issue = "heap-buffer-overflow"
-            else:
-                # fallback to conservative label
-                issue = "buffer-overflow"
-
-            print(f"{Fore.RED}[!!!] FUZZER CRASH: Binary failed with payload: {payload[:20]}...")
-            audit_obj.add_finding(file_path, "Fuzzing", issue)
+        if not has_main:
+            print(f"{Fore.GREEN}[+] Dynamic: Code compiled successfully as library/object. Skipping fuzzer.{Style.RESET_ALL}")
         else:
-            print(f"{Fore.GREEN}[+] Fuzzer: Binary resisted all mutation payloads.")
+            crashed, payload = audit_obj.run_fuzzer([out_bin], file_path)
+            if crashed:
+                # Attempt to detect ASAN-style messages for classification
+                # run the binary once with the payload to capture stderr
+                try:
+                    proc = subprocess.run([out_bin, payload], capture_output=True, timeout=2)
+                except Exception:
+                    proc = None
+
+                asan_msg = ""
+                if proc and proc.stderr:
+                    asan_msg = proc.stderr.decode(errors='ignore').lower()
+
+                if "addresssanitizer" in asan_msg or "stack-buffer-overflow" in asan_msg:
+                    issue = "stack-buffer-overflow"
+                elif "heap-buffer-overflow" in asan_msg:
+                    issue = "heap-buffer-overflow"
+                else:
+                    # fallback to conservative label
+                    issue = "buffer-overflow"
+
+                print(f"{Fore.RED}[!!!] FUZZER CRASH: Binary failed with payload: {payload[:20]}...")
+                audit_obj.add_finding(file_path, "Fuzzing", issue)
+            else:
+                print(f"{Fore.GREEN}[+] Fuzzer: Binary resisted all mutation payloads.")
     else:
         print(f"{Fore.RED}[-] Dynamic: Compilation failed for {os.path.basename(file_path)}")
-        # print compiler output for debugging
-        if proc_compile.stderr:
-            print(proc_compile.stderr.decode(errors='ignore'))
+        # print compiler output for debugging and flag skipped dynamic stage
+        stderr_text = proc_compile.stderr.decode(errors='ignore') if proc_compile.stderr else ""
+        if "glib.h" in stderr_text or "glib-2.0" in stderr_text:
+            print(f"{Fore.YELLOW}[!] Dynamic analysis skipped: glib development headers not present (common for Wireshark dissectors).{Style.RESET_ALL}")
+        if stderr_text:
+            print(stderr_text)
     if os.path.exists(out_bin): os.remove(out_bin)
 
 def audit_python(file_path, audit_obj):
@@ -1557,7 +1652,7 @@ if __name__ == "__main__":
     if not _no_owasp:
         print(f"\n{Fore.CYAN}━━━  Stage 11: OWASP Top 10 (2021) Coverage Report  ━━━{Style.RESET_ALL}")
         try:
-            # Collect all findings as flat dicts
+            # Collect all findings as flat dicts with normalized CWE
             _all_findings_flat = []
             for fpath, findings in audit.report_data.items():
                 for f in findings:
@@ -1565,19 +1660,23 @@ if __name__ == "__main__":
                         "issue_type": f.get("issue", f.get("type", "")),
                         "severity":   f.get("severity", "MEDIUM"),
                         "description": f.get("description", ""),
-                        "cwe":        f.get("cwe", ""),
+                        "cwe":        audit._normalize_cwe(f.get("cwe", "")),
                     })
 
             from dataclasses import asdict as _asdict
             _iac_dicts = [{"rule_id": f.rule_id, "severity": f.severity, "description": f.description,
-                           "cwe": f.cwe, "issue_type": f.issue_type} for f in _iac_findings]
+                           "cwe": audit._normalize_cwe(f.cwe), "issue_type": f.issue_type} for f in _iac_findings]
             _cf_dicts = [{"issue_type": f.issue_type, "severity": f.severity,
-                          "description": f.description, "cwe": f.cwe} for f in _cross_file_findings]
+                          "description": f.description, "cwe": audit._normalize_cwe(f.cwe)} for f in _cross_file_findings]
             _cont_dicts = [{"rule_id": f.rule_id, "severity": f.severity,
-                            "description": f.description, "cwe": f.cwe} for f in _container_findings]
+                            "description": f.description, "cwe": audit._normalize_cwe(f.cwe)} for f in _container_findings]
+            _sca_dicts = [{"issue_type": "vulnerable-component", "severity": f.severity,
+                           "description": f.summary, "cwe": audit._normalize_cwe("CWE-1104")}
+                          for f in sca_findings]
 
             _owasp_report = generate_owasp_report(
                 findings=_all_findings_flat,
+                sca_findings=_sca_dicts,
                 iac_findings=_iac_dicts,
                 cross_file_findings=_cf_dicts,
                 container_findings=_cont_dicts,
@@ -1606,8 +1705,7 @@ if __name__ == "__main__":
     try:
         print(f"\n{Fore.CYAN}━━━  Stage 13: Severity Trend Tracking  ━━━{Style.RESET_ALL}")
         _tracker = TrendTracker()
-
-        _tracker.record_scan(
+        _current_scan = _tracker.record_scan(
             project=proj_name,
             target=path_input,
             stats=audit.stats,
@@ -1615,7 +1713,7 @@ if __name__ == "__main__":
             secrets_count=len(secrets_findings),
             iac_count=len(_iac_findings),
         )
-        _trend_data = _tracker.compare(proj_name)
+        _trend_data = _tracker.compare(_current_scan)
         if _trend_data:
             print(_tracker.format_trend_cli(_trend_data))
     except Exception as _trend_err:

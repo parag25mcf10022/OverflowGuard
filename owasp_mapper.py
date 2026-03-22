@@ -210,6 +210,9 @@ _CWE_TO_OWASP: Dict[str, str] = {
     "CWE-799": "A04",   # Improper Control of Interaction Frequency
     "CWE-840": "A04",   # Business Logic Errors
     "CWE-841": "A04",   # Improper Enforcement of Behavioral Workflow
+    "CWE-398": "A04",   # Indicator of Poor Code Quality
+    "CWE-561": "A04",   # Dead Code
+    "CWE-563": "A04",   # Unused Variable (possibly due to missing design enforcement)
 
     # A05 – Security Misconfiguration
     "CWE-2":   "A05",   # Environmental
@@ -376,6 +379,19 @@ _KEYWORD_TO_OWASP: List[Tuple[str, str]] = [
     ("heap overflow",            "A03"),
     ("format string",            "A03"),
     ("use.after.free",           "A03"),
+    ("negative-index",           "A03"),
+    ("ring-buffer-overflow",     "A03"),
+    ("alloc-loop-mismatch",      "A03"),
+    ("uncapped-loop-bound",      "A03"),
+    ("le-loop-oob",              "A03"),
+    ("narrow-size-cast",         "A03"),
+    ("llvm-memcpy-param-size",   "A03"),
+    ("data-race",                "A04"),
+    ("off-by-one",               "A03"),
+    ("integer-truncation",       "A03"),
+    ("unsafe-block",             "A04"),
+    ("panic-unwrap",             "A04"),
+
     ("double free",              "A03"),
     ("null pointer",             "A03"),
     ("out.of.bounds",            "A03"),

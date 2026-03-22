@@ -359,12 +359,24 @@ class CrossFileTaintAnalyzer:
             import_edges = self._import_graph.get(file_path, [])
             imported_files = {e.to_file for e in import_edges if os.path.isfile(e.to_file)}
 
+            if lang in ("c", "cpp"):
+                # GLib & Wireshark callbacks often lack explicit #include and aren't syntactic calls
+                for fpath_other, funcs_other in self._functions.items():
+                    if fpath_other != file_path:
+                        for fn in funcs_other:
+                            if fn.name in content:
+                                imported_files.add(fpath_other)
+                                break
+
             # Check if tainted data flows to functions in other files
             for imp_file in imported_files:
                 imp_funcs = self._functions.get(imp_file, [])
                 for func in imp_funcs:
-                    # Check if this function is called in the current file
-                    call_pattern = re.compile(rf'\b{re.escape(func.name)}\s*\(')
+                    # Check if this function is called in the current file (or used as callback)
+                    if lang in ("c", "cpp"):
+                        call_pattern = re.compile(rf'\b{re.escape(func.name)}\b')
+                    else:
+                        call_pattern = re.compile(rf'\b{re.escape(func.name)}\s*\(')
                     for m in call_pattern.finditer(content):
                         call_line = content[:m.start()].count("\n") + 1
                         call_text = lines[call_line - 1] if call_line <= len(lines) else ""

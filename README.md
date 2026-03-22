@@ -459,10 +459,10 @@ The repository ships with a **GitHub Actions** workflow (`.github/workflows/ci.y
 | **v9.0** | 2026-03-07 | **Real AST parsing** (tree-sitter, 14 languages); **real CFG-based dataflow** (reaching definitions, taint with gen/kill, fixpoint iteration); **real symbolic execution** (Z3 bitvector, path constraints, counterexamples); **dominator-based FP filter** (sanitizer guard verification, dead-code elimination); 5 new modules (`tree_sitter_engine.py`, `cfg_builder.py`, `real_dataflow.py`, `real_symbolic.py`, `false_positive_filter.py`); 8 new languages (JS, TS, PHP, Ruby, C#, Kotlin, Swift, Scala) |
 | **v8.1** | 2026-03-07 | `github_scanner.py` — scan any GitHub repo by URL/shorthand; git-clone + Contents API fallback; private repo support via GITHUB_TOKEN; full 6-stage pipeline runs on downloaded code |
 | **v8.0** | 2026-03-07 | `sca_scanner.py` (OSV API, 7 manifest formats); `secrets_scanner.py` (30+ patterns + entropy); `sbom_generator.py` (CycloneDX 1.4); `sarif_output.py` (SARIF 2.1.0); 6-stage pipeline |
-| **v7.1** | 2026-03-07 | Smart directory scanning (skip `.venv/`, `site-packages/`); SQL f-string fix; safer pickle loading |
-| **v7.0** | 2026-03 | 10 new advanced-analysis modules; 8-stage pipeline; persistent scan cache; ML false-positive filter |
-| **v6.0** | 2026-02 | Multi-language taint (Go, Rust, Java), semgrep, Infer, GitHub Actions CI, HTML dashboard |
-| **v5.0** | 2026-01 | Python SAST (Bandit), deep pattern analyser, CVE/CWE/CVSS v3.1 vulnerability DB |
+| **v7.1** | 2026-03-03 | Smart directory scanning (skip `.venv/`, `site-packages/`); SQL f-string fix; safer pickle loading |
+| **v7.0** | 2026-03-03 | 10 new advanced-analysis modules; 8-stage pipeline; persistent scan cache; ML false-positive filter |
+| **v6.0** | 2026-03-03 | Multi-language taint (Go, Rust, Java), semgrep, Infer, GitHub Actions CI, HTML dashboard |
+| **v5.0** | 2026-03-03 | Python SAST (Bandit), deep pattern analyser, CVE/CWE/CVSS v3.1 vulnerability DB |
 
 ---
 

@@ -145,6 +145,22 @@ def _fuzz_with_afl(
         with open(os.path.join(seed_dir, "seed2"), "wb") as fh:
             fh.write(b"\x00" * 64)
 
+        import re
+        has_main = False
+        try:
+            with open(source_path, "r", encoding="utf-8", errors="ignore") as _f:
+                has_main = bool(re.search(r'\bmain\s*\(', _f.read()))
+        except Exception:
+            pass
+
+        if not has_main:
+            # We can still check for correct syntax but afl-fuzz won't run without main
+            subprocess.run(
+                [afl_cc, "-g", "-fsanitize=address", "-c", source_path, "-o", binary + ".o"],
+                capture_output=True, text=True, timeout=30,
+            )
+            return []
+
         # Compile with AFL instrumentation
         compile_result = subprocess.run(
             [afl_cc, "-g", "-fsanitize=address", "-o", binary, source_path],
@@ -221,12 +237,25 @@ _BOUNDARY_SEEDS: List[bytes] = [
 
 def _compile_target(source_path: str, output_path: str) -> bool:
     """Compile source to a binary with ASAN.  Returns True on success."""
+    import re
+    has_main = False
+    try:
+        with open(source_path, "r", encoding="utf-8", errors="ignore") as _f:
+            has_main = bool(re.search(r'\bmain\s*\(', _f.read()))
+    except Exception:
+        pass
+
     ext    = os.path.splitext(source_path)[1].lower()
     cc     = "g++" if ext in (".cpp", ".cc", ".cxx") else "gcc"
+    
+    cmd = [cc, "-g", "-fsanitize=address,undefined", "-fno-omit-frame-pointer"]
+    if has_main:
+        cmd.extend([source_path, "-o", output_path])
+    else:
+        cmd.extend(["-c", source_path, "-o", output_path + ".o"])
+        
     result = subprocess.run(
-        [cc, "-g", "-fsanitize=address,undefined",
-         "-fno-omit-frame-pointer",
-         source_path, "-o", output_path],
+        cmd,
         capture_output=True, text=True, timeout=30,
     )
     return result.returncode == 0
