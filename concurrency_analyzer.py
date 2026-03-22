@@ -43,11 +43,26 @@ def _snip(lines: List[str], ln: int) -> str:
 def _lineno(src: str, pos: int) -> int:
     return src[:pos].count("\n") + 1
 
+def _mask_comments_c_java_go(src: str) -> str:
+    pattern = re.compile(r'(".*?"|\'.*?\')|(/\*.*?\*/)|(//[^\n]*)', re.DOTALL)
+    def repl(m):
+        if m.group(1): return m.group(1)
+        return "".join("\n" if c == "\n" else " " for c in m.group(0))
+    return pattern.sub(repl, src)
+
+def _mask_comments_python(src: str) -> str:
+    pattern = re.compile(r'(".*?"|\'.*?\'|""".*?"""|\'\'\'.*?\'\'\')|(#.*?$)', re.DOTALL | re.MULTILINE)
+    def repl(m):
+        if m.group(1): return m.group(1)
+        return "".join("\n" if c == "\n" else " " for c in m.group(0))
+    return pattern.sub(repl, src)
+
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # C / C++
 # ═══════════════════════════════════════════════════════════════════════════════
 def _analyze_c(src: str, src_lines: List[str]) -> List[ConcurrencyFinding]:
+    src = _mask_comments_c_java_go(src)
     findings: List[ConcurrencyFinding] = []
     seen: Set[Tuple[str, int]] = set()
 
@@ -149,6 +164,8 @@ def _analyze_c(src: str, src_lines: List[str]) -> List[ConcurrencyFinding]:
              "double-free when object lifetime ends before thread completes",
              "HIGH")
 
+    if not bool(re.search(r"pthread|std::thread|std::mutex|std::atomic|_beginthread", src)):
+        findings = [f for f in findings if f.issue_type not in ("data-race", "missing-atomic")]
     return findings
 
 
@@ -156,6 +173,7 @@ def _analyze_c(src: str, src_lines: List[str]) -> List[ConcurrencyFinding]:
 # Java
 # ═══════════════════════════════════════════════════════════════════════════════
 def _analyze_java(src: str, src_lines: List[str]) -> List[ConcurrencyFinding]:
+    src = _mask_comments_c_java_go(src)
     findings: List[ConcurrencyFinding] = []
     seen: Set[Tuple[str, int]] = set()
 
@@ -241,6 +259,7 @@ def _analyze_java(src: str, src_lines: List[str]) -> List[ConcurrencyFinding]:
 # Go
 # ═══════════════════════════════════════════════════════════════════════════════
 def _analyze_go(src: str, src_lines: List[str]) -> List[ConcurrencyFinding]:
+    src = _mask_comments_c_java_go(src)
     findings: List[ConcurrencyFinding] = []
     seen: Set[Tuple[str, int]] = set()
 
@@ -313,6 +332,7 @@ def _analyze_go(src: str, src_lines: List[str]) -> List[ConcurrencyFinding]:
 # Python
 # ═══════════════════════════════════════════════════════════════════════════════
 def _analyze_python(src: str, src_lines: List[str]) -> List[ConcurrencyFinding]:
+    src = _mask_comments_python(src)
     findings: List[ConcurrencyFinding] = []
     seen: Set[Tuple[str, int]] = set()
 
