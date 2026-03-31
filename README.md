@@ -2,6 +2,7 @@
 
 **Lead Researcher:** Parag Bagade  
 **GitHub:** [parag25mcf10022/OverflowGuard](https://github.com/parag25mcf10022/OverflowGuard)  
+**Medium:** Read about the tool here [https://medium.com/@bagade1122/i-built-a-security-scanner-that-goes-beyond-regex-heres-why-and-how-0713f64d03ae]
 **Status:**  v11.0 (IaC Scanning + Cross-file Taint + Container Security + OWASP Top 10 + Custom Rules + Auto-fix + JSON Output + Trend Tracking + CI Templates)
 
 ![CI](https://github.com/parag25mcf10022/OverflowGuard/actions/workflows/ci.yml/badge.svg)
