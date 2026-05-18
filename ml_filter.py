@@ -156,6 +156,8 @@ DEFAULT_MODEL_PATH = os.path.join(
 
 DEFAULT_THRESHOLD = 0.35  # findings scoring below this are suppressed
 
+_model_absence_warned = False  # print at most once per process
+
 
 class MLFilter:
     """
@@ -172,9 +174,17 @@ class MLFilter:
     """
 
     def __init__(self, model_path: Optional[str] = None):
+        global _model_absence_warned
         self._model_path = model_path or DEFAULT_MODEL_PATH
         self._clf        = None
         self._using_ml   = False
+
+        if _HAS_SKLEARN and not os.path.isfile(self._model_path) and not _model_absence_warned:
+            _model_absence_warned = True
+            print(
+                f"[MLFilter] No trained model at {self._model_path} — "
+                "using heuristic FP scoring (train a model with MLFilter().train() to enable ML)."
+            )
 
         if _HAS_SKLEARN and os.path.isfile(self._model_path):
             # Safety: only auto-load from the well-known OverflowGuard model dir.

@@ -57,6 +57,7 @@ class TrendReport:
     delta_low: int = 0
     trend: str = "stable"        # improving | stable | degrading
     quality_gate: str = "pass"   # pass | fail
+    gate_reason: str = ""        # human-readable explanation of gate failure
 
 
 # ---------------------------------------------------------------------------
@@ -199,17 +200,36 @@ class TrendTracker:
 
     # ── Trend analysis ────────────────────────────────────────────────────
 
-    def compare(self, current: ScanRecord, previous: Optional[ScanRecord] = None) -> TrendReport:
-        """Compare current scan with previous and produce a trend report."""
+    def compare(
+        self,
+        current: ScanRecord,
+        previous: Optional[ScanRecord] = None,
+        max_critical: Optional[int] = None,
+        max_high: Optional[int] = None,
+    ) -> TrendReport:
+        """Compare current scan with previous and produce a trend report.
+
+        max_critical / max_high: absolute upper bounds; quality gate fails if
+        the current scan's count exceeds either, regardless of delta.
+        """
         if previous is None:
             previous = self.get_previous_scan(current.project)
 
         if previous is None:
+            gate_reason = ""
+            gate = "pass"
+            if max_critical is not None and current.critical > max_critical:
+                gate = "fail"
+                gate_reason = f"CRITICAL count {current.critical} exceeds --max-critical {max_critical}"
+            if max_high is not None and current.high > max_high:
+                gate = "fail"
+                gate_reason += ("; " if gate_reason else "") + f"HIGH count {current.high} exceeds --max-high {max_high}"
             return TrendReport(
                 current=current,
                 previous=None,
                 trend="baseline",
-                quality_gate="pass",
+                quality_gate=gate,
+                gate_reason=gate_reason,
             )
 
         delta_total = current.total_findings - previous.total_findings
@@ -228,8 +248,21 @@ class TrendTracker:
         else:
             trend = "degrading" if delta_total > 0 else "stable"
 
-        # Quality gate: fail if new CRITICAL or HIGH findings
-        gate = "fail" if (delta_crit > 0 or delta_high > 0) else "pass"
+        # Quality gate: delta-based (new CRITICAL/HIGH) + optional absolute thresholds
+        gate = "pass"
+        gate_reason = ""
+        if delta_crit > 0:
+            gate = "fail"
+            gate_reason = f"+{delta_crit} new CRITICAL finding(s)"
+        if delta_high > 0:
+            gate = "fail"
+            gate_reason += ("; " if gate_reason else "") + f"+{delta_high} new HIGH finding(s)"
+        if max_critical is not None and current.critical > max_critical:
+            gate = "fail"
+            gate_reason += ("; " if gate_reason else "") + f"CRITICAL count {current.critical} exceeds --max-critical {max_critical}"
+        if max_high is not None and current.high > max_high:
+            gate = "fail"
+            gate_reason += ("; " if gate_reason else "") + f"HIGH count {current.high} exceeds --max-high {max_high}"
 
         return TrendReport(
             current=current,
@@ -242,6 +275,7 @@ class TrendTracker:
             delta_low=delta_low,
             trend=trend,
             quality_gate=gate,
+            gate_reason=gate_reason,
         )
 
     # ── Formatting ────────────────────────────────────────────────────────
@@ -260,8 +294,10 @@ class TrendTracker:
 
             lines.append(f"  vs. previous scan ({prev.timestamp[:10]}, commit {prev.git_commit[:8] or 'N/A'}):")
             lines.append(f"    Findings: {report.current.total_findings} (was {prev.total_findings}, delta: {_delta(report.current.total_findings - prev.total_findings)})")
-            lines.append(f"    CRITICAL: {_delta(report.delta_critical)}  HIGH: {_delta(report.delta_high)}  "
-                         f"MEDIUM: {_delta(report.delta_medium)}  LOW: {_delta(report.delta_low)}")
+            lines.append(f"    CRITICAL: {report.current.critical} ({_delta(report.delta_critical)})  "
+                         f"HIGH: {report.current.high} ({_delta(report.delta_high)})  "
+                         f"MEDIUM: {report.current.medium} ({_delta(report.delta_medium)})  "
+                         f"LOW: {report.current.low} ({_delta(report.delta_low)})")
             if report.new_findings > 0:
                 lines.append(f"    New findings: {report.new_findings}")
             if report.fixed_findings > 0:
@@ -269,7 +305,10 @@ class TrendTracker:
         else:
             lines.append(f"  (First scan recorded — no previous data to compare)")
 
-        lines.append(f"  Quality gate: {report.quality_gate.upper()}")
+        gate_str = report.quality_gate.upper()
+        if report.quality_gate == "fail" and report.gate_reason:
+            gate_str += f" ({report.gate_reason})"
+        lines.append(f"  Quality gate: {gate_str}")
         return "\n".join(lines)
 
     def get_trend_data_for_json(self, project: str, limit: int = 10) -> Dict:

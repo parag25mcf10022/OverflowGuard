@@ -224,7 +224,7 @@ class AuditManager:
                 proc_in = subprocess.run(cmd_list, input=payload.encode(), capture_output=True, timeout=1.5)
                 if proc_in.returncode != 0 or "sanitizer" in (proc_in.stderr.decode().lower()):
                     return True, payload
-            except:
+            except (subprocess.TimeoutExpired, OSError, ValueError, UnicodeDecodeError):
                 continue
         return False, None
 
@@ -1022,14 +1022,26 @@ def audit_rust(file_path, audit_obj):
                               note_override=af.note,
                               confidence_override=af.confidence)
 
-    with open(file_path, 'r') as f:
+    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
         content = f.read()
+    _rust_lines = content.splitlines()
+
+    def _rust_line(token: str) -> tuple:
+        for _i, _l in enumerate(_rust_lines, 1):
+            if token in _l:
+                return _i, _l.strip()
+        return 1, ""
+
     if "unsafe" in content:
+        _ln, _snip = _rust_line("unsafe")
         print(f"{Fore.RED}[!!!] Static: Potential UNSAFE-BLOCK detected.")
-        audit_obj.add_finding(file_path, "Static", "unsafe-block")
+        audit_obj.add_finding(file_path, "Static", "unsafe-block",
+                              line_override=_ln, snippet_override=_snip)
     if "mem::transmute" in content:
+        _ln, _snip = _rust_line("mem::transmute")
         print(f"{Fore.RED}[!!!] Static: mem::transmute() — extremely unsafe type cast.")
         audit_obj.add_finding(file_path, "Static", "unsafe-block",
+                              line_override=_ln, snippet_override=_snip,
                               note_override="mem::transmute found — reinterprets bits without safety")
 
 def audit_java(file_path, audit_obj):
@@ -1063,20 +1075,42 @@ def audit_java(file_path, audit_obj):
                               note_override=af.note,
                               confidence_override=af.confidence)
 
-    with open(file_path, 'r') as f:
+    with open(file_path, 'r', encoding='utf-8', errors='ignore') as f:
         content = f.read()
+    _java_lines = content.splitlines()
+
+    def _java_line(pattern: str) -> int:
+        """Return 1-based line number of first match of *pattern* in the file."""
+        rx = re.compile(pattern)
+        for _i, _l in enumerate(_java_lines, 1):
+            if rx.search(_l):
+                return _i
+        return 1
+
     if "ObjectInputStream" in content:
+        _ln = _java_line(r'\bObjectInputStream\b')
         print(f"{Fore.RED}[!!!] Static: INSECURE-DESERIALIZATION pattern found.")
-        audit_obj.add_finding(file_path, "Static", "insecure-deserialization")
+        audit_obj.add_finding(file_path, "Static", "insecure-deserialization",
+                              line_override=_ln,
+                              snippet_override=_java_lines[_ln - 1].strip())
     if re.search(r'Runtime\.getRuntime\(\)\.exec', content):
+        _ln = _java_line(r'Runtime\.getRuntime\(\)\.exec')
         print(f"{Fore.RED}[!!!] Static: Runtime.exec() — command injection risk.")
-        audit_obj.add_finding(file_path, "Static", "os-command-injection")
+        audit_obj.add_finding(file_path, "Static", "os-command-injection",
+                              line_override=_ln,
+                              snippet_override=_java_lines[_ln - 1].strip())
     if re.search(r'getInstance\s*\(\s*["\'](?:MD5|SHA1|DES|RC4)["\']', content):
+        _ln = _java_line(r'getInstance\s*\(\s*["\'](?:MD5|SHA1|DES|RC4)["\']')
         print(f"{Fore.RED}[!!!] Static: Weak crypto algorithm detected.")
-        audit_obj.add_finding(file_path, "Static", "weak-crypto")
+        audit_obj.add_finding(file_path, "Static", "weak-crypto",
+                              line_override=_ln,
+                              snippet_override=_java_lines[_ln - 1].strip())
     if re.search(r'new\s+Random\s*\(', content):
+        _ln = _java_line(r'new\s+Random\s*\(')
         print(f"{Fore.YELLOW}[!] Static: java.util.Random is not cryptographically secure.")
-        audit_obj.add_finding(file_path, "Static", "weak-rng")
+        audit_obj.add_finding(file_path, "Static", "weak-rng",
+                              line_override=_ln,
+                              snippet_override=_java_lines[_ln - 1].strip())
 
 # ---------------------------------------------------------------------------
 # v9.0 — shared real‑analysis entry point for ALL languages
@@ -1167,108 +1201,106 @@ def analyze_file(file_path, audit_obj):
 
 if __name__ == "__main__":
     print(f"\n{Fore.CYAN}\u26d4  OVERFLOW GUARD {VERSION} | Researcher: {RESEARCHER_NAME}")
-    print(f"{Fore.WHITE}Accepts: local path, local file, GitHub URL, or owner/repo shorthand.")
-    print(f"{Fore.WHITE}Options: --diff [staged|working|head|last_tag|commits:base..target]")
-    print(f"{Fore.WHITE}         --diff-only (skip full scan, only scan changed files)")
-    print(f"{Fore.WHITE}         --format [html|json|sarif|all]  (output format, default: html)")
-    print(f"{Fore.WHITE}         --severity [critical|high|medium|low]  (min severity threshold)")
-    print(f"{Fore.WHITE}         --autofix  (generate auto-fix patches for findings)")
-    print(f"{Fore.WHITE}         --init-config  (generate sample .overflowguard.yml)")
-    print(f"{Fore.WHITE}         --init-rules   (generate sample custom rules directory)")
-    print(f"{Fore.WHITE}         --rules-dir <path>  (custom rules directory)")
-    print(f"{Fore.WHITE}         --incremental   (only scan changed files + dependency cone)")
-    print(f"{Fore.WHITE}         --no-iac  --no-container  --no-owasp  (disable specific stages)")
+    # ── Parse CLI arguments via argparse ─────────────────────────────────────
+    import argparse as _argparse
 
-    # ── Parse CLI arguments ───────────────────────────────────────────────────
-    _diff_mode = None
-    _diff_base = None
-    _diff_target = None
-    _diff_only = False
-    _output_format = "html"
-    _severity_threshold = None
-    _autofix_enabled = False
-    _incremental = False
-    _rules_dir = None
-    _no_iac = False
-    _no_container = False
-    _no_owasp = False
-    _args = sys.argv[1:]
+    _parser = _argparse.ArgumentParser(
+        prog="python main.py",
+        description=f"OverflowGuard {VERSION} — polyglot security scanner",
+        formatter_class=_argparse.RawDescriptionHelpFormatter,
+    )
+    _parser.add_argument(
+        "target", nargs="?",
+        help="Local path/file or GitHub repo (owner/repo, URL, owner/repo@branch)",
+    )
+    _parser.add_argument(
+        "--diff", nargs="?", const="head", metavar="MODE",
+        help="Differential scan mode: staged|working|head|commits:base..target|last-tag",
+    )
+    _parser.add_argument(
+        "--diff-only", action="store_true",
+        help="Only scan changed files; skip the full scan",
+    )
+    _parser.add_argument(
+        "--format", dest="output_format", default="html",
+        choices=["html", "json", "sarif", "all"],
+        help="Output format (default: html)",
+    )
+    _parser.add_argument(
+        "--severity", dest="severity_threshold",
+        choices=["critical", "high", "medium", "low"],
+        metavar="LEVEL",
+        help="Minimum severity to include in report",
+    )
+    _parser.add_argument("--autofix", action="store_true",
+                         help="Generate auto-fix patch file for findings")
+    _parser.add_argument("--incremental", action="store_true",
+                         help="Only scan changed files + dependency cone (requires git)")
+    _parser.add_argument("--rules-dir", metavar="PATH",
+                         help="Directory containing custom YAML rules")
+    _parser.add_argument("--no-iac", action="store_true",
+                         help="Disable Stage 7: IaC scanning")
+    _parser.add_argument("--no-container", action="store_true",
+                         help="Disable Stage 9: container/Dockerfile scanning")
+    _parser.add_argument("--no-owasp", action="store_true",
+                         help="Disable Stage 11: OWASP Top 10 mapping")
+    _parser.add_argument("--no-cross-file", action="store_true",
+                         help="Disable Stage 8: cross-file taint analysis")
+    _parser.add_argument("--max-critical", type=int, default=None, metavar="N",
+                         help="Quality gate: fail if total CRITICAL findings exceed N")
+    _parser.add_argument("--max-high", type=int, default=None, metavar="N",
+                         help="Quality gate: fail if total HIGH findings exceed N")
+    _parser.add_argument("--init-config", action="store_true",
+                         help="Generate a sample .overflowguard.yml and exit")
+    _parser.add_argument("--init-rules", action="store_true",
+                         help="Generate sample custom rules directory and exit")
 
-    # Handle --init-config early
-    if "--init-config" in _args:
+    _cli = _parser.parse_args(sys.argv[1:])
+
+    # Handle early-exit commands
+    if _cli.init_config:
         config_path = generate_sample_config()
-        print(f"{Fore.GREEN}[✔] Sample config written to: {config_path}")
+        print(f"{Fore.GREEN}[\u2714] Sample config written to: {config_path}")
         sys.exit(0)
-
-    # Handle --init-rules early
-    if "--init-rules" in _args:
+    if _cli.init_rules:
         rules_path = generate_sample_rules()
-        print(f"{Fore.GREEN}[✔] Sample rules written to: {rules_path}")
+        print(f"{Fore.GREEN}[\u2714] Sample rules written to: {rules_path}")
         sys.exit(0)
 
-    # Extract all flags
-    _filtered_args = []
-    i = 0
-    while i < len(_args):
-        if _args[i] == "--diff-only":
-            _diff_only = True
-            _diff_mode = _diff_mode or "head"
-            i += 1
-        elif _args[i] == "--diff":
-            if i + 1 < len(_args) and not _args[i + 1].startswith("--"):
-                raw = _args[i + 1]
-                if raw.startswith("commits:"):
-                    _diff_mode = "commits"
-                    parts = raw[8:].split("..", 1)
-                    _diff_base = parts[0]
-                    _diff_target = parts[1] if len(parts) > 1 else "HEAD"
-                else:
-                    _diff_mode = raw
-                i += 2
-            else:
-                _diff_mode = "head"
-                i += 1
-        elif _args[i] == "--format":
-            if i + 1 < len(_args):
-                _output_format = _args[i + 1].lower()
-                i += 2
-            else:
-                i += 1
-        elif _args[i] == "--severity":
-            if i + 1 < len(_args):
-                _severity_threshold = _args[i + 1].upper()
-                i += 2
-            else:
-                i += 1
-        elif _args[i] == "--autofix":
-            _autofix_enabled = True
-            i += 1
-        elif _args[i] == "--incremental":
-            _incremental = True
-            i += 1
-        elif _args[i] == "--rules-dir":
-            if i + 1 < len(_args):
-                _rules_dir = _args[i + 1]
-                i += 2
-            else:
-                i += 1
-        elif _args[i] == "--no-iac":
-            _no_iac = True
-            i += 1
-        elif _args[i] == "--no-container":
-            _no_container = True
-            i += 1
-        elif _args[i] == "--no-owasp":
-            _no_owasp = True
-            i += 1
-        else:
-            _filtered_args.append(_args[i])
-            i += 1
+    # Unpack parsed values
+    _diff_mode:     Optional[str] = None
+    _diff_base:     Optional[str] = None
+    _diff_target:   Optional[str] = None
 
-    if _filtered_args:
-        path_input = _filtered_args[0]
-    else:
-        path_input = input("Enter Path/File/GitHub Repo: ").strip()
+    if _cli.diff:
+        _raw_diff = _cli.diff
+        if _raw_diff.startswith("commits:"):
+            _diff_mode = "commits"
+            _parts = _raw_diff[8:].split("..", 1)
+            _diff_base   = _parts[0]
+            _diff_target = _parts[1] if len(_parts) > 1 else "HEAD"
+        else:
+            _diff_mode = _raw_diff
+
+    _diff_only:          bool           = _cli.diff_only
+    if _diff_only and not _diff_mode:
+        _diff_mode = "head"
+
+    _output_format:      str            = _cli.output_format
+    _severity_threshold: Optional[str]  = (
+        _cli.severity_threshold.upper() if _cli.severity_threshold else None
+    )
+    _autofix_enabled:    bool           = _cli.autofix
+    _incremental:        bool           = _cli.incremental
+    _rules_dir:          Optional[str]  = _cli.rules_dir
+    _no_iac:             bool           = _cli.no_iac
+    _no_container:       bool           = _cli.no_container
+    _no_owasp:           bool           = _cli.no_owasp
+    _no_cross_file:      bool           = _cli.no_cross_file
+    _max_critical:       Optional[int]  = _cli.max_critical
+    _max_high:           Optional[int]  = _cli.max_high
+
+    path_input: str = _cli.target or input("Enter Path/File/GitHub Repo: ").strip()
 
     # ── Detect whether the input is a GitHub repo reference ───────────────────
     _gh_context  = None    # holds the live context manager when scanning GitHub
@@ -1568,7 +1600,7 @@ if __name__ == "__main__":
 
     # ── Stage 8: Cross-file Taint Analysis ────────────────────────────────────
     _cross_file_findings = []
-    if os.path.isdir(path_input):
+    if os.path.isdir(path_input) and not _no_cross_file:
         print(f"\n{Fore.CYAN}━━━  Stage 8: Cross-file Taint Analysis  ━━━{Style.RESET_ALL}")
         try:
             _cross_file_findings = run_cross_file_taint(path_input, verbose=True)
@@ -1730,14 +1762,6 @@ if __name__ == "__main__":
                 final_stats[sev] = final_stats.get(sev, 0) + 1
         audit.stats = final_stats
         
-        # Recompute stats from final report_data accurately
-        final_stats = {"scanned": audit.stats.get("scanned", 0), "CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
-        for findings in audit.report_data.values():
-            for f in findings:
-                sev = audit._normalize_severity(f.get("severity", ""), f.get("confidence", ""))
-                final_stats[sev] = final_stats.get(sev, 0) + 1
-        audit.stats = final_stats
-        
         _current_scan = _tracker.record_scan(
             project=proj_name,
             target=path_input,
@@ -1746,7 +1770,7 @@ if __name__ == "__main__":
             secrets_count=len(secrets_findings),
             iac_count=len(_iac_findings),
         )
-        _trend_data = _tracker.compare(_current_scan)
+        _trend_data = _tracker.compare(_current_scan, max_critical=_max_critical, max_high=_max_high)
         if _trend_data:
             print(_tracker.format_trend_cli(_trend_data))
     except Exception as _trend_err:

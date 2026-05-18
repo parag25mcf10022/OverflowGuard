@@ -30,14 +30,29 @@ import re
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from tree_sitter_engine import (
-    ASTQueries,
-    TSNode,
-    TS_AVAILABLE,
-    language_for_file,
-    parse_file,
-)
-from cfg_builder import CFG, build_cfgs
+try:
+    from tree_sitter_engine import (
+        ASTQueries,
+        TSNode,
+        TS_AVAILABLE,
+        language_for_file,
+        parse_file,
+    )
+    from cfg_builder import CFG, build_cfgs
+except ImportError:
+    TS_AVAILABLE = False
+    ASTQueries = None  # type: ignore[assignment,misc]
+    TSNode = None      # type: ignore[assignment,misc]
+    CFG = None         # type: ignore[assignment,misc]
+
+    def language_for_file(_path: str):  # type: ignore[misc]
+        return None
+
+    def parse_file(_path: str):  # type: ignore[misc]
+        return None, None
+
+    def build_cfgs(_root, _lang):  # type: ignore[misc]
+        return []
 
 # ---------------------------------------------------------------------------
 # Generic finding interface

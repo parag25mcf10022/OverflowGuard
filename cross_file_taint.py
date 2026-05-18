@@ -47,6 +47,7 @@ class FunctionExport:
     params: List[str] = field(default_factory=list)
     returns_tainted: bool = False     # does this function return user input?
     tainted_params: List[int] = field(default_factory=list)  # 0-indexed param positions that flow to sinks
+    body_snippet: str = ""            # first 2000 chars of function body for sink checks
 
 
 @dataclass
@@ -152,12 +153,22 @@ def _extract_imports_java(content: str, file_path: str) -> List[ImportEdge]:
 
 def _extract_imports_go(content: str, file_path: str) -> List[ImportEdge]:
     edges = []
-    for m in re.finditer(r'"([^"]+)"', content):
-        mod = m.group(1)
+    base_dir = os.path.dirname(file_path)
+
+    def _add(mod: str) -> None:
         if mod.startswith(".") or "/" in mod:
-            # Relative or project import
-            resolved = os.path.normpath(os.path.join(os.path.dirname(file_path), mod))
+            resolved = os.path.normpath(os.path.join(base_dir, mod))
             edges.append(ImportEdge(from_file=file_path, to_file=resolved, to_module=mod))
+
+    # Single-line: import "pkg/path"
+    for m in re.finditer(r'^import\s+"([^"]+)"', content, re.MULTILINE):
+        _add(m.group(1))
+
+    # Block: import ( ... )  — only scan strings inside the parens
+    for block_m in re.finditer(r'\bimport\s*\(([^)]*)\)', content, re.DOTALL):
+        for m in re.finditer(r'"([^"]+)"', block_m.group(1)):
+            _add(m.group(1))
+
     return edges
 
 
@@ -186,6 +197,38 @@ def _extract_imports_rust(content: str, file_path: str) -> List[ImportEdge]:
         resolved = os.path.join(base_dir, mod + ".rs")
         edges.append(ImportEdge(from_file=file_path, to_file=resolved, to_module=m.group(1)))
     return edges
+
+
+# ---------------------------------------------------------------------------
+# Tainted-variable extractor
+# ---------------------------------------------------------------------------
+
+# Patterns to capture the variable that receives tainted data.
+# Groups: (variable_name)
+_TAINT_VAR_PATTERNS: List[re.Pattern] = [
+    re.compile(r'\b(\w+)\s*=\s*\w+\s*\('),           # var = source(...)
+    re.compile(r'\b(\w+)\s*,\s*\w+\s*=\s*\w+\s*\('), # var, _ = source(...)
+    re.compile(r'\w+\s*\(\s*(\w+)\s*,'),              # source(var, ...) — first arg receives input
+    re.compile(r'\b(\w+)\s*<<'),                      # cin >> var  (reversed, but still useful)
+]
+
+
+def _extract_tainted_var(line_text: str) -> Optional[str]:
+    """Best-effort: return the variable name that a taint-source line writes into."""
+    # Assignment: buf = input(...), data = request.args.get(...)
+    m = re.search(r'^\s*(\w+)\s*(?:[:,]?\s*\w*\s*)?=', line_text)
+    if m:
+        candidate = m.group(1)
+        # Skip keywords that look like assignments but aren't variable names
+        if candidate not in ("if", "while", "for", "return", "assert", "raise"):
+            return candidate
+
+    # C-style: fgets(buf, ...) / scanf("%s", buf)
+    m = re.search(r'\w+\s*\(\s*(\w+)\s*[,)]', line_text)
+    if m:
+        return m.group(1)
+
+    return None
 
 
 _IMPORT_EXTRACTORS = {
@@ -253,6 +296,7 @@ def _extract_functions(content: str, file_path: str, lang: str) -> List[Function
             params=params,
             returns_tainted=returns_tainted,
             tainted_params=tainted_params,
+            body_snippet=func_body,
         ))
 
     return functions
@@ -360,13 +404,8 @@ class CrossFileTaintAnalyzer:
             imported_files = {e.to_file for e in import_edges if os.path.isfile(e.to_file)}
 
             if lang in ("c", "cpp"):
-                # GLib & Wireshark callbacks often lack explicit #include and aren't syntactic calls
-                for fpath_other, funcs_other in self._functions.items():
-                    if fpath_other != file_path:
-                        for fn in funcs_other:
-                            if fn.name in content:
-                                imported_files.add(fpath_other)
-                                break
+                # Require explicit includes to mitigate false positives
+                pass
 
             # Check if tainted data flows to functions in other files
             for imp_file in imported_files:
@@ -381,17 +420,24 @@ class CrossFileTaintAnalyzer:
                         call_line = content[:m.start()].count("\n") + 1
                         call_text = lines[call_line - 1] if call_line <= len(lines) else ""
 
-                        # Check if any source data might flow into the call
-                        # Simple heuristic: source and call are in same function scope
-                        for src_line, src_name in source_lines:
-                            if abs(call_line - src_line) < 50:  # within 50 lines
-                                # Check if the called function has sinks or tainted params
-                                imp_lang = _detect_lang(imp_file)
-                                imp_content = self._file_cache.get(imp_file, "")
-                                imp_sinks = _CROSS_FILE_SINKS.get(imp_lang or lang, [])
+                        # Check if the tainted variable from a source line appears
+                        # in this call's argument list — more precise than proximity.
+                        call_args_text = call_text[call_text.find(func.name):]
+                        imp_lang = _detect_lang(imp_file)
+                        imp_sinks = _CROSS_FILE_SINKS.get(imp_lang or lang, [])
+                        # Sink check is scoped to the called function's body only.
+                        has_sink = any(sink in func.body_snippet for sink in imp_sinks)
 
-                                has_sink = any(sink in imp_content for sink in imp_sinks)
-                                if has_sink or func.tainted_params:
+                        for src_line, src_name in source_lines:
+                            tainted_var = _extract_tainted_var(
+                                lines[src_line - 1] if src_line <= len(lines) else ""
+                            )
+                            var_in_call = (
+                                tainted_var and re.search(
+                                    rf'\b{re.escape(tainted_var)}\b', call_args_text
+                                )
+                            )
+                            if var_in_call and (has_sink or func.tainted_params):
                                     chain = [
                                         f"{os.path.relpath(file_path, root_path)}:{src_name}(line {src_line})",
                                         f"{os.path.relpath(file_path, root_path)}:{func.name}()(line {call_line})",
@@ -422,10 +468,17 @@ class CrossFileTaintAnalyzer:
             for func in my_funcs:
                 if not func.tainted_params and not func.returns_tainted:
                     continue
-                # Find callers in other files
+                # Find callers in other files that explicitly import this file
                 for other_file, other_content in self._file_cache.items():
                     if other_file == file_path:
                         continue
+                    
+                    # Verify explicit dependency relationship
+                    other_edges = self._import_graph.get(other_file, [])
+                    base_fp = os.path.splitext(file_path)[0]
+                    if not any(e.to_file == file_path or os.path.splitext(e.to_file)[0] == base_fp for e in other_edges):
+                        continue
+
                     if func.name in other_content:
                         other_lang = _detect_lang(other_file)
                         other_sinks = _CROSS_FILE_SINKS.get(other_lang or lang, [])
