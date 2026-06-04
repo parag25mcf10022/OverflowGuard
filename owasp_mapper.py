@@ -669,9 +669,15 @@ def format_owasp_cli(report: OWASPReport) -> str:
         lines.append(f"  {info['id']:14s} {info['name'][:40]:<40s} {count:3d} findings  {status}{sev_str}")
 
     lines.append("=" * 70)
-    lines.append(f"  Coverage: {report.coverage_pct:.0f}% ({report.mapped_findings}/{report.total_findings} findings mapped)")
+    covered = sum(1 for v in report.coverage.values() if v.get("finding_count", 0) > 0)
+    map_pct = (report.mapped_findings / report.total_findings * 100) if report.total_findings else 0.0
+    # Two distinct metrics — keep them separate so neither is misread:
+    lines.append(f"  Category coverage : {report.coverage_pct:.0f}%  "
+                 f"({covered}/10 OWASP categories have at least one finding)")
+    lines.append(f"  Finding mapping   : {map_pct:.0f}%  "
+                 f"({report.mapped_findings}/{report.total_findings} findings mapped to a category)")
     if report.unmapped_findings:
-        lines.append(f"  Unmapped: {report.unmapped_findings} findings could not be mapped to OWASP Top 10")
+        lines.append(f"  Unmapped          : {report.unmapped_findings} findings could not be mapped to OWASP Top 10")
 
     return "\n".join(lines)
 
@@ -706,8 +712,11 @@ def format_owasp_html(report: OWASPReport) -> str:
     html = f"""
 <div class="owasp-report" style="margin:20px 0;">
   <h3>OWASP Top 10 (2021) Coverage</h3>
-  <p>Coverage: <strong>{report.coverage_pct:.0f}%</strong> &mdash;
-     {report.mapped_findings}/{report.total_findings} findings mapped</p>
+  <p>Category coverage: <strong>{report.coverage_pct:.0f}%</strong>
+     ({sum(1 for v in report.coverage.values() if v.get("finding_count", 0) > 0)}/10 categories)
+     &nbsp;|&nbsp; Finding mapping:
+     <strong>{(report.mapped_findings / report.total_findings * 100) if report.total_findings else 0:.0f}%</strong>
+     ({report.mapped_findings}/{report.total_findings} findings mapped)</p>
   <table style="width:100%;border-collapse:collapse;font-size:14px;">
     <thead>
       <tr style="background:#2d3436;color:#fff;">

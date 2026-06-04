@@ -5,6 +5,51 @@ import json
 import datetime
 import random
 from typing import Optional
+
+
+def _maybe_reexec_in_venv() -> None:
+    """If launched with an interpreter that lacks the full engine (tree-sitter)
+    but a project virtualenv that has it exists, transparently re-launch under
+    that interpreter. This stops the common foot-gun of running
+    ``python3 main.py`` and silently getting the degraded regex fallback.
+    Set OVERFLOWGUARD_NO_REEXEC=1 to disable.
+    """
+    if os.environ.get("OVERFLOWGUARD_NO_REEXEC") == "1":
+        return
+    try:
+        import tree_sitter  # noqa: F401
+        return  # current interpreter already has the full engine
+    except ImportError:
+        pass
+    here = os.path.dirname(os.path.abspath(__file__))
+    for cand in (os.path.join(here, ".venv", "bin", "python"),
+                 os.path.join(here, "venv", "bin", "python")):
+        if not os.path.exists(cand):
+            continue
+        # NB: a venv interpreter is usually a *symlink* to the system python,
+        # so comparing realpaths is wrong (they match); the venv differs by its
+        # site-packages. Compare the literal launch path; the env-var guard set
+        # before execv() prevents any re-exec loop.
+        if os.path.abspath(cand) == os.path.abspath(sys.executable):
+            continue
+        try:
+            has_ts = subprocess.run(
+                [cand, "-c", "import tree_sitter"],
+                capture_output=True,
+            ).returncode == 0
+        except OSError:
+            has_ts = False
+        if has_ts:
+            os.environ["OVERFLOWGUARD_NO_REEXEC"] = "1"
+            sys.stderr.write(
+                f"[i] tree-sitter missing in {sys.executable}; re-launching "
+                f"under {cand} for the full engine...\n")
+            os.execv(cand, [cand] + sys.argv)
+    # No suitable venv found — continue; a degraded-mode warning is shown later.
+
+
+_maybe_reexec_in_venv()
+
 from colorama import init, Fore, Style
 import re
 import html as html_module
@@ -266,19 +311,88 @@ class AuditManager:
         ]
         
         for payload in fuzz_payloads:
-            try:
-                # Test via Arguments
-                proc = subprocess.run(cmd_list + [payload], capture_output=True, timeout=1.5)
-                if proc.returncode != 0 or "sanitizer" in (proc.stderr.decode().lower()):
-                    return True, payload
-                
-                # Test via Stdin
-                proc_in = subprocess.run(cmd_list, input=payload.encode(), capture_output=True, timeout=1.5)
-                if proc_in.returncode != 0 or "sanitizer" in (proc_in.stderr.decode().lower()):
-                    return True, payload
-            except (subprocess.TimeoutExpired, OSError, ValueError, UnicodeDecodeError):
-                continue
+            for vector in ("arg", "stdin"):
+                try:
+                    if vector == "arg":
+                        proc = subprocess.run(cmd_list + [payload],
+                                              capture_output=True, timeout=1.5)
+                    else:
+                        proc = subprocess.run(cmd_list, input=payload.encode(errors="ignore"),
+                                              capture_output=True, timeout=1.5)
+                except (subprocess.TimeoutExpired, OSError, ValueError, UnicodeDecodeError):
+                    continue
+                if self._is_real_crash(proc):
+                    return True, self._describe_crash(proc, payload, vector)
         return False, None
+
+    @staticmethod
+    def _is_real_crash(proc) -> bool:
+        """A genuine crash is a process killed by a signal (negative returncode
+        on POSIX) or one that printed sanitizer / glibc-corruption diagnostics.
+
+        A plain non-zero ``exit()`` is normal error handling, NOT a crash —
+        treating it as one was flagging almost every program as vulnerable.
+        """
+        if proc.returncode is not None and proc.returncode < 0:
+            return True
+        err = proc.stderr.decode(errors="ignore").lower() if proc.stderr else ""
+        markers = (
+            "addresssanitizer", "runtime error:", "stack smashing detected",
+            "double free or corruption", "free(): ", "malloc(): ",
+            "corrupted size", "heap-buffer-overflow", "stack-buffer-overflow",
+            "heap-use-after-free", "segmentation fault",
+        )
+        return any(m in err for m in markers)
+
+    @staticmethod
+    def _describe_crash(proc, payload: str, vector: str) -> dict:
+        """Classify a crash by sanitizer output, falling back to signal type."""
+        import signal as _signal
+        rc = proc.returncode
+        err = proc.stderr.decode(errors="ignore") if proc.stderr else ""
+        low = err.lower()
+
+        if "heap-use-after-free" in low or "use-after-free" in low:
+            crash_type, issue = "use-after-free", "use-after-free"
+        elif ("heap-buffer-overflow" in low or "double free" in low
+              or "malloc():" in low or "free():" in low or "corrupted size" in low):
+            crash_type, issue = "heap corruption", "heap-buffer-overflow"
+        elif "stack-buffer-overflow" in low or "stack smashing" in low:
+            crash_type, issue = "stack buffer overflow", "stack-buffer-overflow"
+        elif "global-buffer-overflow" in low:
+            crash_type, issue = "global buffer overflow", "buffer-overflow"
+        # UndefinedBehaviorSanitizer diagnostics: "runtime error: <kind>"
+        elif "runtime error:" in low:
+            if "integer overflow" in low or "cannot be represented" in low:
+                crash_type, issue = "integer overflow (UBSan)", "integer-overflow"
+            elif "division by zero" in low or "divide by zero" in low:
+                crash_type, issue = "division by zero (UBSan)", "division-by-zero"
+            elif "out of bounds" in low or "index" in low:
+                crash_type, issue = "out-of-bounds access (UBSan)", "buffer-overflow"
+            elif "null pointer" in low:
+                crash_type, issue = "null-pointer dereference (UBSan)", "null-pointer"
+            elif "shift" in low:
+                crash_type, issue = "invalid shift (UBSan)", "integer-overflow"
+            else:
+                crash_type, issue = "undefined behavior (UBSan)", "buffer-overflow"
+        elif rc is not None and rc < 0:
+            try:
+                signame = _signal.Signals(-rc).name
+            except (ValueError, KeyError):
+                signame = f"signal {-rc}"
+            sig_map = {
+                "SIGSEGV": ("segmentation fault", "buffer-overflow"),
+                "SIGABRT": ("abort — corruption detected", "heap-buffer-overflow"),
+                "SIGFPE":  ("floating-point exception", "division-by-zero"),
+                "SIGBUS":  ("bus error", "buffer-overflow"),
+                "SIGILL":  ("illegal instruction", "buffer-overflow"),
+            }
+            crash_type, issue = sig_map.get(signame, (signame, "buffer-overflow"))
+        else:
+            crash_type, issue = "abnormal termination", "buffer-overflow"
+
+        return {"payload": payload, "vector": vector, "returncode": rc,
+                "crash_type": crash_type, "issue": issue, "stderr": err}
 
     def add_finding(self, filename, stage, finding_type,
                     line_override=None, snippet_override=None,
@@ -887,29 +1001,21 @@ def audit_cpp(file_path, audit_obj):
         if not has_main:
             print(f"{Fore.GREEN}[+] Dynamic: Code compiled successfully as library/object. Skipping fuzzer.{Style.RESET_ALL}")
         else:
-            crashed, payload = audit_obj.run_fuzzer([out_bin], file_path)
+            crashed, info = audit_obj.run_fuzzer([out_bin], file_path)
             if crashed:
-                # Attempt to detect ASAN-style messages for classification
-                # run the binary once with the payload to capture stderr
-                try:
-                    proc = subprocess.run([out_bin, payload], capture_output=True, timeout=2)
-                except Exception:
-                    proc = None
-
-                asan_msg = ""
-                if proc and proc.stderr:
-                    asan_msg = proc.stderr.decode(errors='ignore').lower()
-
-                if "addresssanitizer" in asan_msg or "stack-buffer-overflow" in asan_msg:
-                    issue = "stack-buffer-overflow"
-                elif "heap-buffer-overflow" in asan_msg:
-                    issue = "heap-buffer-overflow"
-                else:
-                    # fallback to conservative label
-                    issue = "buffer-overflow"
-
-                print(f"{Fore.RED}[!!!] FUZZER CRASH: Binary failed with payload: {payload[:20]}...")
-                audit_obj.add_finding(file_path, "Fuzzing", issue)
+                issue = info["issue"]
+                payload_repr = info["payload"][:24].replace("\n", "\\n")
+                print(f"{Fore.RED}[!!!] FUZZER CRASH ({info['crash_type']}) via "
+                      f"{info['vector']} input — payload {payload_repr!r}… "
+                      f"(rc={info['returncode']}) → {issue}{Style.RESET_ALL}")
+                audit_obj.add_finding(
+                    file_path, "Fuzzing", issue,
+                    confidence_override="HIGH",
+                    note_override=(
+                        f"Dynamic fuzzing crash: {info['crash_type']} "
+                        f"(returncode {info['returncode']}) triggered via "
+                        f"{info['vector']} input."),
+                )
             else:
                 print(f"{Fore.GREEN}[+] Fuzzer: Binary resisted all mutation payloads.")
     else:
@@ -1859,6 +1965,7 @@ if __name__ == "__main__":
             sca_count=len(sca_findings),
             secrets_count=len(secrets_findings),
             iac_count=len(_iac_findings),
+            engine_mode="full" if TS_AVAILABLE else "degraded",
         )
         _trend_data = _tracker.compare(_current_scan, max_critical=_max_critical, max_high=_max_high)
         if _trend_data:
@@ -1913,7 +2020,9 @@ if __name__ == "__main__":
     print(f"  Container issues     : {len(_container_findings)}")
     print(f"  Custom rule findings : {len(_custom_findings)}")
     if _owasp_report:
-        print(f"  OWASP coverage       : {_owasp_report.coverage_pct:.0f}% ({_owasp_report.mapped_findings}/{_owasp_report.total_findings} mapped)")
+        _owasp_covered = sum(1 for v in _owasp_report.coverage.values() if v.get("finding_count", 0) > 0)
+        print(f"  OWASP category cover : {_owasp_report.coverage_pct:.0f}% ({_owasp_covered}/10 categories)")
+        print(f"  OWASP finding mapping: {_owasp_report.mapped_findings}/{_owasp_report.total_findings} findings mapped")
     if _auto_fixes:
         print(f"  Auto-fix patches     : {len(_auto_fixes)}")
     if _trend_data:

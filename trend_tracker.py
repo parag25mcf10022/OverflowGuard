@@ -42,6 +42,7 @@ class ScanRecord:
     duration_sec: float = 0.0
     git_commit: str = ""
     git_branch: str = ""
+    engine_mode: str = "full"   # "full" (tree-sitter) | "degraded" (regex fallback)
 
 
 @dataclass
@@ -97,13 +98,19 @@ class TrendTracker:
                     duration     REAL NOT NULL DEFAULT 0.0,
                     git_commit   TEXT NOT NULL DEFAULT '',
                     git_branch   TEXT NOT NULL DEFAULT '',
-                    findings_json TEXT NOT NULL DEFAULT '[]'
+                    findings_json TEXT NOT NULL DEFAULT '[]',
+                    engine_mode  TEXT NOT NULL DEFAULT 'full'
                 )
             """)
             conn.execute("""
                 CREATE INDEX IF NOT EXISTS idx_scans_project
                 ON scans(project, timestamp DESC)
             """)
+            # Migrate older DBs that predate the engine_mode column.
+            cols = [r[1] for r in conn.execute("PRAGMA table_info(scans)").fetchall()]
+            if "engine_mode" not in cols:
+                conn.execute(
+                    "ALTER TABLE scans ADD COLUMN engine_mode TEXT NOT NULL DEFAULT 'full'")
 
     # ── Record a scan ─────────────────────────────────────────────────────
 
@@ -118,6 +125,7 @@ class TrendTracker:
         sca_count: int = 0,
         secrets_count: int = 0,
         iac_count: int = 0,
+        engine_mode: str = "full",
     ) -> ScanRecord:
         """Record a completed scan and return the ScanRecord."""
         import uuid
@@ -146,6 +154,7 @@ class TrendTracker:
             duration_sec=duration_sec,
             git_commit=git_commit,
             git_branch=git_branch,
+            engine_mode=engine_mode,
         )
 
         findings_json = json.dumps(findings_summary or [])
@@ -155,15 +164,15 @@ class TrendTracker:
                 INSERT INTO scans (scan_id, timestamp, project, target, version,
                                    total, critical, high, medium, low, info,
                                    files, sca, secrets, iac, duration,
-                                   git_commit, git_branch, findings_json)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   git_commit, git_branch, findings_json, engine_mode)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 record.scan_id, record.timestamp, record.project, record.target,
                 record.version, record.total_findings,
                 record.critical, record.high, record.medium, record.low, record.info,
                 record.files_scanned, record.sca_vulns, record.secrets, record.iac_issues,
                 record.duration_sec, record.git_commit, record.git_branch,
-                findings_json,
+                findings_json, record.engine_mode,
             ))
 
         return record
@@ -177,7 +186,7 @@ class TrendTracker:
                 SELECT scan_id, timestamp, project, target, version,
                        total, critical, high, medium, low, info,
                        files, sca, secrets, iac, duration,
-                       git_commit, git_branch
+                       git_commit, git_branch, engine_mode
                 FROM scans
                 WHERE project = ?
                 ORDER BY timestamp DESC
@@ -191,12 +200,22 @@ class TrendTracker:
             files_scanned=r[11], sca_vulns=r[12], secrets=r[13],
             iac_issues=r[14], duration_sec=r[15],
             git_commit=r[16], git_branch=r[17],
+            engine_mode=(r[18] if len(r) > 18 and r[18] else "full"),
         ) for r in rows]
 
-    def get_previous_scan(self, project: str) -> Optional[ScanRecord]:
-        """Get the most recent previous scan for comparison."""
-        history = self.get_history(project, limit=2)
-        return history[1] if len(history) >= 2 else (history[0] if history else None)
+    def get_previous_scan(self, project: str,
+                          engine_mode: Optional[str] = None) -> Optional[ScanRecord]:
+        """Get the most recent previous scan for comparison.
+
+        When *engine_mode* is given, only consider prior scans run in the same
+        mode so a full-engine run is never compared against a degraded
+        (regex-fallback) baseline (or vice-versa), which would produce
+        meaningless deltas and bogus quality-gate failures.
+        """
+        history = self.get_history(project, limit=50)
+        if engine_mode is not None:
+            history = [h for h in history if h.engine_mode == engine_mode]
+        return history[1] if len(history) >= 2 else None
 
     # ── Trend analysis ────────────────────────────────────────────────────
 
@@ -213,7 +232,7 @@ class TrendTracker:
         the current scan's count exceeds either, regardless of delta.
         """
         if previous is None:
-            previous = self.get_previous_scan(current.project)
+            previous = self.get_previous_scan(current.project, engine_mode=current.engine_mode)
 
         if previous is None:
             gate_reason = ""
@@ -284,6 +303,9 @@ class TrendTracker:
         """Format trend report for CLI display."""
         lines = []
         lines.append(f"  Trend: {report.trend.upper()}")
+        if report.current.engine_mode != "full":
+            lines.append(f"  Engine mode: {report.current.engine_mode.upper()} "
+                         f"(degraded — install tree-sitter for accurate trends)")
 
         if report.previous:
             prev = report.previous
