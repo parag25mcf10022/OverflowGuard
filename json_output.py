@@ -13,6 +13,19 @@ import os
 import datetime
 from typing import Dict, List, Any, Optional
 
+# Canonical three-level confidence scale. Engines occasionally emit mixed
+# casing or leak a severity ("CRITICAL"/"INFO"); collapse everything here so
+# the machine-readable output is always consistent.
+_CONFIDENCE_MAP = {
+    "CRITICAL": "HIGH", "CRIT": "HIGH", "HIGH": "HIGH", "HI": "HIGH",
+    "MEDIUM": "MEDIUM", "MED": "MEDIUM",
+    "LOW": "LOW", "INFO": "LOW", "INFORMATIONAL": "LOW", "INFORMATION": "LOW",
+}
+
+
+def _norm_confidence(value: Any) -> str:
+    return _CONFIDENCE_MAP.get(str(value).strip().upper() if value else "", "MEDIUM")
+
 
 def generate_json_report(
     audit_manager,
@@ -47,8 +60,9 @@ def generate_json_report(
                 "line": f.get("line"),
                 "issue": f.get("issue", ""),
                 "severity": f.get("severity", "INFO"),
-                "confidence": f.get("confidence", "Medium"),
+                "confidence": _norm_confidence(f.get("confidence")),
                 "stage": f.get("stage", ""),
+                "corroborating_stages": f.get("corroborating_stages", [f.get("stage", "")]),
                 "cwe": f.get("cwe", ""),
                 "cve": f.get("cve", ""),
                 "cvss": f.get("cvss", ""),

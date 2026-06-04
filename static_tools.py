@@ -165,6 +165,13 @@ def run_cppcheck(file_path: str) -> List[ToolFinding]:
             ):
                 continue
 
+            # Drop maintainability/style noise (style, performance,
+            # portability) — e.g. unusedFunction, constParameter,
+            # staticFunction — unless the specific check is explicitly mapped
+            # to a known security weakness. Real bugs surface as error/warning.
+            if severity not in ("error", "warning") and error_id not in CPPCHECK_MAP:
+                continue
+
             location = error.find("location")
             if location is not None:
                 err_file = location.get("file", file_path)

@@ -40,6 +40,16 @@ class SymbolicFinding:
     stage:      str = "Symbolic"
 
 
+# A line that declares an array (`char buf[N];`, `int arr[LEN];`, …). The
+# bracketed expression there is the size, not an index, so such lines must be
+# excluded from array-index overflow checks.
+_DECL_LINE_RE = re.compile(
+    r"\b(?:char|short|int|long|unsigned|signed|float|double|void|wchar_t|"
+    r"size_t|u?int(?:8|16|32|64)_t|struct\s+\w+|union\s+\w+|enum\s+\w+)\b"
+    r"[\w\s\*]*\b\w+\s*\[",
+)
+
+
 # ── Helper ────────────────────────────────────────────────────────────────────
 def _read(path: str) -> str:
     try:
@@ -335,6 +345,14 @@ class SymbolicChecker:
         for m in self._IDX_STMT.finditer(src):
             ln      = src[:m.start()].count("\n") + 1
             arr, idx = m.group(1), m.group(2)
+            # A numeric literal index has a known compile-time bound, and in a
+            # declaration like `char buf[16];` the `[16]` is the size, not an
+            # index — neither is an unbounded access.
+            if idx.isdigit():
+                continue
+            line_text = src_lines[ln - 1] if 0 < ln <= len(src_lines) else ""
+            if _DECL_LINE_RE.search(line_text):
+                continue
             if arr in buf_sizes or arr in heap_sizes:
                 if idx not in bounds:
                     _add("negative-index", ln,

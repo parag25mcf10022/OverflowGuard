@@ -70,6 +70,9 @@ class ASTAnalyzer:
         self.file_path = os.path.abspath(file_path)
         self.findings: List[ASTFinding] = []
         self._lines: List[str] = []
+        # (spelling, line, col) of pointers appearing as the argument to a
+        # free()/delete call — these must not be reported as use-after-free.
+        self._freed_arg_locs: set = set()
 
     # ------------------------------------------------------------------
     # Helpers
@@ -168,12 +171,19 @@ class ASTAnalyzer:
                                       node.location.column, "HIGH",
                                       f"double-free: free() called on '{ptr_name}' which was already freed")
                         freed_vars.add(ptr_name)
+                        # Remember this argument's location so the recursive
+                        # walk doesn't later flag it as "used after free".
+                        argloc = toks[0].location
+                        self._freed_arg_locs.add(
+                            (ptr_name, argloc.line, argloc.column))
 
         # ---- Use of a freed pointer ----
         if node.kind in (cindex.CursorKind.DECL_REF_EXPR,
                          cindex.CursorKind.MEMBER_REF_EXPR,
                          cindex.CursorKind.ARRAY_SUBSCRIPT_EXPR):
-            if node.spelling in freed_vars:
+            if (node.spelling in freed_vars and
+                    (node.spelling, node.location.line, node.location.column)
+                    not in self._freed_arg_locs):
                 self._add("use-after-free", node.location.line,
                           node.location.column, "HIGH",
                           f"Pointer '{node.spelling}' used after free()")

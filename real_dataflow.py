@@ -618,12 +618,17 @@ class RealDataflowAnalyzer:
                             free_lines[v] = node.start_line
                 # Check for uses of freed vars
                 elif node.type == "identifier" and node.text in freed_vars:
-                    # Skip if it's the argument to free itself
-                    parent_type = ""
-                    ancestors = node.ancestors()
-                    if ancestors:
-                        parent_type = ancestors[-1].type if ancestors else ""
-                    if parent_type not in call_types:
+                    # Skip if this identifier is itself an argument to a
+                    # free()/delete call. walk_named() is a *preorder* walk, so
+                    # the free node is visited before its own argument child —
+                    # without this check `free(p)` reports `p` as "used after
+                    # freed" on the very same line (a false positive).
+                    in_free_call = any(
+                        anc.type in call_types
+                        and queries.call_name(anc) in ("free", "delete")
+                        for anc in node.ancestors()
+                    )
+                    if not in_free_call:
                         snippet = ""
                         if 0 < node.start_line <= len(source_lines):
                             snippet = source_lines[node.start_line - 1].strip()

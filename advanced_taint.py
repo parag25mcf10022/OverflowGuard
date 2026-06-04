@@ -381,6 +381,66 @@ def _lnum(src: str, pos: int) -> int:
     return src[:pos].count("\n") + 1
 
 
+def _mask_strings_and_comments(src: str, lang: str = "c") -> str:
+    """Blank the *interior* of string/char literals and the body of comments
+    while preserving total length and newline positions, so that offsets and
+    line numbers computed on the result still match the original source.
+
+    This prevents sink/source regexes from matching inside string literals
+    (e.g. ``gets(`` inside ``printf("... gets() ...")``) or comments.
+    Delimiter characters are kept so surrounding token structure is intact.
+    """
+    if lang == "python":
+        pattern = re.compile(
+            r'("""(?:\\.|[^\\])*?"""|\'\'\'(?:\\.|[^\\])*?\'\'\''
+            r'|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\')'
+            r'|(#[^\n]*)',
+            re.DOTALL,
+        )
+    else:
+        pattern = re.compile(
+            r'("(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\')'
+            r'|(/\*.*?\*/)|(//[^\n]*)',
+            re.DOTALL,
+        )
+
+    def _blank(text: str) -> str:
+        return "".join("\n" if c == "\n" else " " for c in text)
+
+    def repl(m: "re.Match") -> str:
+        text = m.group(0)
+        if m.group(1) and len(text) >= 2:
+            # string/char literal: keep first+last delimiter, blank the inside
+            return text[0] + _blank(text[1:-1]) + text[-1]
+        # comment (or degenerate literal): blank everything
+        return _blank(text)
+
+    return pattern.sub(repl, src)
+
+
+# Control-flow keywords that can legally precede a call (so they must NOT be
+# mistaken for a return type that would mark a declaration).
+_DECL_PREFIX_NONTYPES = {
+    "return", "if", "while", "for", "switch", "else", "do",
+    "sizeof", "case", "goto", "and", "or", "not", "in", "is",
+}
+
+
+def _looks_like_declaration(prefix: str) -> bool:
+    """Heuristic: is the callee name a declaration/definition rather than a call?
+
+    In a prototype/definition the name is directly preceded by a return type
+    (an identifier, optionally with ``*``/``&``), e.g. ``char *gets(`` or
+    ``def parse(``. In a real call it is preceded by start-of-statement, an
+    operator (``=``, ``(``, ``,``), ``.``/``->``, or a control keyword
+    (``return foo(``). ``prefix`` is the text on the line before the name.
+    """
+    m = re.search(r"([A-Za-z_]\w*)\s*[\*&\s]*$", prefix)
+    if not m:
+        return False
+    return m.group(1) not in _DECL_PREFIX_NONTYPES
+
+
 def _compute_risk_score(threat: ThreatLevel, has_sanitizer: bool) -> float:
     """
     Compute a CVSS‑like risk score (0.0 – 10.0) based on source threat
@@ -416,6 +476,12 @@ class RegexTaintTracker:
     def analyze(self, src: str, lines: List[str], file_path: str) -> List[AdvancedTaintFinding]:
         findings: List[AdvancedTaintFinding] = []
         seen: Set[Tuple[str, int]] = set()
+
+        # Mask string-literal interiors and comments so sink/source regexes
+        # don't match tokens like gets()/system() that appear inside strings
+        # or comments. Length and newlines are preserved, so offsets/line
+        # numbers stay valid; `lines` is left untouched for snippet display.
+        src = _mask_strings_and_comments(src, "python" if self.lang == "python" else "c")
 
         # Step 1: Identify all taint sources (line → TaintSource)
         taint_map: Dict[str, TaintSource] = {}   # variable → source
@@ -486,6 +552,10 @@ class RegexTaintTracker:
             )
             for m in sink_pat.finditer(src):
                 ln = _lnum(src, m.start())
+                # Skip prototypes / definitions: e.g. `char *gets(char *str);`
+                line_start = src.rfind("\n", 0, m.start()) + 1
+                if _looks_like_declaration(src[line_start:m.start()]):
+                    continue
                 args_text = m.group(1)
 
                 # Check if any argument is tainted
@@ -551,6 +621,10 @@ class RegexTaintTracker:
                 pattern = re.compile(r"\b" + re.escape(func_name) + r"\s*\(")
                 for m in pattern.finditer(src):
                     ln = _lnum(src, m.start())
+                    # Skip prototypes / definitions: e.g. `char *gets(char *str);`
+                    line_start = src.rfind("\n", 0, m.start()) + 1
+                    if _looks_like_declaration(src[line_start:m.start()]):
+                        continue
                     key = (vuln_type, ln)
                     if key in seen:
                         continue

@@ -86,13 +86,48 @@ RESEARCHER_NAME = "Parag Bagade"
 GITHUB_REPO_URL = "https://github.com/parag25mcf10022/OverflowGuard"
 VERSION = "v11.0"
 
+# Maps engine-specific issue labels to a canonical vulnerability *family* so
+# that the same underlying bug reported by several engines under slightly
+# different names (e.g. buffer-overflow / stack-buffer-overflow /
+# heap-buffer-overflow at the same line) is merged into one finding instead of
+# counted three times. Types not listed here are their own family.
+_VULN_FAMILY = {
+    "buffer-overflow":           "buffer-overflow",
+    "stack-buffer-overflow":     "buffer-overflow",
+    "heap-buffer-overflow":      "buffer-overflow",
+    "stack-overflow":            "buffer-overflow",
+    "heap-overflow":             "buffer-overflow",
+    "global-buffer-overflow":    "buffer-overflow",
+    "potential-stack-overflow":  "buffer-overflow",
+    "out-of-bounds":             "buffer-overflow",
+    "oob-read":                  "buffer-overflow",
+    "oob-write":                 "buffer-overflow",
+    "off-by-one":                "buffer-overflow",
+    "negative-index":            "buffer-overflow",
+    "integer-overflow":          "integer-overflow",
+    "integer-truncation":        "integer-overflow",
+    "integer-underflow":         "integer-overflow",
+}
+
+# Severity ordering for picking the most severe label when findings are merged.
+_SEVERITY_RANK = {"INFO": 0, "LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
+_CONFIDENCE_RANK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2}
+
+
+def _canonical_vuln(finding_type: str) -> str:
+    return _VULN_FAMILY.get(finding_type, finding_type)
+
+
 class AuditManager:
     def __init__(self, target_input):
         self.report_data = {}
         self.stats = {"scanned": 0, "CRITICAL": 0, "HIGH": 0, "MEDIUM": 0, "LOW": 0, "INFO": 0}
         self.scan_date = datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        # tracks (filename, issue_type, line) so we never report a duplicate
+        # tracks (filename, vuln_family, line) so we never report a duplicate;
+        # maps the key to the stored finding dict so corroborating detections
+        # from other engines can be merged into it.
         self._seen: set = set()
+        self._finding_index: dict = {}
         
         clean_target = target_input.rstrip(os.sep)
         self.output_base_name = os.path.basename(clean_target) if clean_target else "audit_report"
@@ -123,6 +158,23 @@ class AuditManager:
 
         sev = _map(value) or _map(confidence)
         return sev or "MEDIUM"
+
+    @staticmethod
+    def _normalize_confidence(value: Optional[str]) -> str:
+        """Normalize confidence to exactly HIGH / MEDIUM / LOW.
+
+        Engines emit mixed casing ("High", "MEDIUM", "low") and occasionally
+        leak a severity value ("CRITICAL"/"INFO") into the confidence field;
+        collapse all of those to the canonical three-level scale.
+        """
+        key = str(value).strip().upper() if value else ""
+        mapping = {
+            "CRITICAL": "HIGH", "CRIT": "HIGH", "HIGH": "HIGH", "HI": "HIGH",
+            "MEDIUM": "MEDIUM", "MED": "MEDIUM",
+            "LOW": "LOW",
+            "INFO": "LOW", "INFORMATIONAL": "LOW", "INFORMATION": "LOW",
+        }
+        return mapping.get(key, "MEDIUM")
 
     @staticmethod
     def _normalize_cwe(value: Optional[str]) -> str:
@@ -243,22 +295,42 @@ class AuditManager:
         else:
             line_num, snippet = self.get_vulnerable_line(filename, finding_type)
 
-        # ---- Deduplicate: same issue on the same line is the same bug ----
-        dedup_key = (filename, finding_type, line_num)
-        if dedup_key in self._seen:
-            return
-        self._seen.add(dedup_key)
-
         severity = self._normalize_severity(
             severity_override or intel.get("level"),
             confidence_override,
         )
+        confidence = self._normalize_confidence(confidence_override)
+
+        # ---- Deduplicate across engines on the canonical vuln family ----
+        # The same bug found by several engines (under different labels) at the
+        # same line is merged: keep the most severe label, raise confidence to
+        # reflect corroboration, and record which engines agreed.
+        dedup_key = (filename, _canonical_vuln(finding_type), line_num)
+        existing = self._finding_index.get(dedup_key)
+        if existing is not None:
+            if stage not in existing["corroborating_stages"]:
+                existing["corroborating_stages"].append(stage)
+            # Independent agreement from a second engine raises confidence.
+            if len(existing["corroborating_stages"]) >= 2:
+                if _CONFIDENCE_RANK.get(existing["confidence"].upper(), 1) < _CONFIDENCE_RANK["HIGH"]:
+                    existing["confidence"] = "HIGH"
+            # Keep the most severe label/severity seen for this bug.
+            if _SEVERITY_RANK.get(severity, 2) > _SEVERITY_RANK.get(existing["severity"], 2):
+                self.stats[existing["severity"]] = max(0, self.stats.get(existing["severity"], 0) - 1)
+                self.stats.setdefault(severity, 0)
+                self.stats[severity] += 1
+                existing["severity"] = severity
+                existing["issue"] = finding_type
+                existing["cwe"] = cwe_override or intel.get("cwe", "N/A")
+            return
+        self._seen.add(dedup_key)
+
         self.stats.setdefault(severity, 0)
         self.stats[severity] += 1
 
         cwe_val = cwe_override or intel.get("cwe", "N/A")
 
-        self.report_data[filename].append({
+        record = {
             "stage": stage,
             "issue": finding_type,
             "severity": severity,
@@ -269,9 +341,12 @@ class AuditManager:
             "remediation": intel.get("fix", "Review security best practices."),
             "line": line_num,
             "snippet": snippet,
-            "confidence": confidence_override or "Medium",
+            "confidence": confidence,
             "note": note_override or "",
-        })
+            "corroborating_stages": [stage],
+        }
+        self.report_data[filename].append(record)
+        self._finding_index[dedup_key] = record
 
     def generate_html_report(self):
         filename_html = f"{self.output_base_name}.html"
@@ -350,8 +425,8 @@ class AuditManager:
                 note  = html_module.escape(str(f.get("note", "")))
                 desc  = html_module.escape(str(f["description"]))
                 remed = html_module.escape(str(f["remediation"]))
-                conf  = f.get("confidence", "Medium")
-                conf_colour = {"High": "#69f0ae", "Medium": "#ffd740", "Low": "#9e9e9e"}.get(conf, "#9e9e9e")
+                conf  = self._normalize_confidence(f.get("confidence"))
+                conf_colour = {"HIGH": "#69f0ae", "MEDIUM": "#ffd740", "LOW": "#9e9e9e"}.get(conf, "#9e9e9e")
                 cards_html += f"""
 <div style="background:#181818;padding:22px 28px;margin-bottom:18px;
             border-radius:10px;border-left:8px solid {acc};">
@@ -1466,7 +1541,7 @@ if __name__ == "__main__":
             ),
             "line":        1,
             "snippet":     f"{sf.dep.name}=={sf.dep.version}",
-            "confidence":  "High" if sf.cvss >= 7.0 else "Medium",
+            "confidence":  "HIGH" if sf.cvss >= 7.0 else "MEDIUM",
             "note":        (
                 f"Fix available: {sf.fixed_version}" if sf.fixed_version else ""
             ),
@@ -1494,7 +1569,7 @@ if __name__ == "__main__":
             ),
             "line":        1,
             "snippet":     f"{lf.dep.name}=={lf.dep.version}",
-            "confidence":  "High",
+            "confidence":  "HIGH",
             "note":        f"License risk level: {lf.risk_level}",
         })
         audit.stats[sev] = audit.stats.get(sev, 0) + 1
@@ -1528,7 +1603,7 @@ if __name__ == "__main__":
             ),
             "line":        sec.line,
             "snippet":     sec.redacted,
-            "confidence":  "High" if sec.entropy > 4.5 else "Medium",
+            "confidence":  "HIGH" if sec.entropy > 4.5 else "MEDIUM",
             "note":        f"{sec.secret_type} (entropy={sec.entropy:.2f})",
         })
         audit.stats[sev] = audit.stats.get(sev, 0) + 1
@@ -1590,7 +1665,7 @@ if __name__ == "__main__":
                     "remediation": iac_f.remediation,
                     "line":        iac_f.line,
                     "snippet":     iac_f.snippet,
-                    "confidence":  "High",
+                    "confidence":  "HIGH",
                     "note":        f"Framework: {iac_f.framework}",
                 })
                 sev_key = iac_f.severity.upper()
@@ -1621,7 +1696,7 @@ if __name__ == "__main__":
                     "remediation": "Validate/sanitize data at the boundary between files",
                     "line":        cf.sink_line,
                     "snippet":     " → ".join(cf.taint_chain),
-                    "confidence":  "High" if cf.risk_score >= 7.0 else "Medium",
+                    "confidence":  "HIGH" if cf.risk_score >= 7.0 else "MEDIUM",
                     "note":        f"Taint chain: {' → '.join(cf.taint_chain)}",
                 })
                 sev_key = cf.severity.upper()
@@ -1653,7 +1728,7 @@ if __name__ == "__main__":
                     "remediation": cf.remediation,
                     "line":        cf.line,
                     "snippet":     cf.snippet,
-                    "confidence":  "High",
+                    "confidence":  "HIGH",
                     "note":        f"Category: {cf.category}",
                 })
                 sev_key = cf.severity.upper()
@@ -1688,8 +1763,9 @@ if __name__ == "__main__":
                         "remediation": cf.fix or "See custom rule definition",
                         "line":        cf.line,
                         "snippet":     cf.snippet,
-                        "confidence":  "Medium",
+                        "confidence":  "MEDIUM",
                         "note":        f"Custom rule: {cf.rule_id}",
+                        "corroborating_stages": ["CustomRules"],
                     })
                     sev_key = cf.severity.upper()
                     audit.stats[sev_key] = audit.stats.get(sev_key, 0) + 1

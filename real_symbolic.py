@@ -452,8 +452,10 @@ class SymbolicExecutionEngine:
                     )
 
         # --- Array out‑of‑bounds ---
+        # Skip declarations: in `char buf[16];` the `[16]` is the array size,
+        # not an index access, so treating 16 >= 16 as an overflow is a FP.
         m = re.search(r'(\w+)\s*\[\s*(\w+)\s*\]', text)
-        if m:
+        if m and stmt.kind != "decl":
             arr, idx_name = m.group(1), m.group(2)
             if arr in state.buffers:
                 _, buf_size = state.buffers[arr]
