@@ -4,7 +4,13 @@ import sys
 import json
 import datetime
 import random
+import io
+import contextlib
 from typing import Optional
+
+# Output verbosity — clean one-line-per-file by default; --verbose restores
+# the full per-engine finding stream. Set from the CLI in __main__.
+VERBOSE = False
 
 
 def _maybe_reexec_in_venv() -> None:
@@ -1369,16 +1375,62 @@ _MULTI_LANG_EXTS = {
     ".scala", ".sc",
 }
 
-def analyze_file(file_path, audit_obj):
-    audit_obj.stats["scanned"] += 1
-    ext = os.path.splitext(file_path)[1].lower()
-    print(f"\n{Fore.MAGENTA}┌{'─'*65}┐\n│ ANALYZING: {os.path.basename(file_path).ljust(54)} │\n└{'─'*65}┘")
+_SEV_COLOUR_CLI = {
+    "CRITICAL": Fore.RED, "HIGH": Fore.MAGENTA, "MEDIUM": Fore.YELLOW,
+    "LOW": Fore.CYAN, "INFO": Fore.WHITE,
+}
+
+
+def _dispatch_audit(ext, file_path, audit_obj):
     if ext in [".c", ".cpp", ".cc"]: audit_cpp(file_path, audit_obj)
     elif ext == ".py": audit_python(file_path, audit_obj)
     elif ext == ".go": audit_go(file_path, audit_obj)
     elif ext == ".rs": audit_rust(file_path, audit_obj)
     elif ext == ".java": audit_java(file_path, audit_obj)
     elif ext in _MULTI_LANG_EXTS: audit_multi_language(file_path, audit_obj)
+
+
+def _print_file_progress(file_path, audit_obj):
+    """One concise line per file (clean mode): name + finding counts."""
+    findings = audit_obj.report_data.get(file_path, [])
+    name = os.path.basename(file_path)
+    if not findings:
+        print(f"{Fore.GREEN}  [✓] {name:<32} clean{Style.RESET_ALL}")
+        return
+    counts = {}
+    for f in findings:
+        counts[f["severity"]] = counts.get(f["severity"], 0) + 1
+    order = ["CRITICAL", "HIGH", "MEDIUM", "LOW", "INFO"]
+    worst = next((s for s in order if counts.get(s)), "INFO")
+    colour = _SEV_COLOUR_CLI.get(worst, Fore.WHITE)
+    parts = ", ".join(f"{counts[s]} {s.lower()}" for s in order if counts.get(s))
+    print(f"{colour}  [!] {name:<32} {len(findings):>3} findings  "
+          f"({parts}){Style.RESET_ALL}")
+
+
+def analyze_file(file_path, audit_obj):
+    audit_obj.stats["scanned"] += 1
+    ext = os.path.splitext(file_path)[1].lower()
+    if VERBOSE:
+        print(f"\n{Fore.MAGENTA}┌{'─'*65}┐\n│ ANALYZING: {os.path.basename(file_path).ljust(54)} │\n└{'─'*65}┘")
+        _dispatch_audit(ext, file_path, audit_obj)
+    else:
+        # Clean mode: swallow the per-engine chatter, show one summary line.
+        # Findings are still captured via add_finding(); use --verbose to see
+        # the full per-engine detail. On a TTY, show a transient "scanning…"
+        # line so slow files (compile + fuzz) don't look frozen — it is
+        # overwritten by the result line, keeping the final output tidy.
+        name = os.path.basename(file_path)
+        is_tty = sys.stdout.isatty()
+        if is_tty:
+            sys.stdout.write(f"{Fore.BLUE}  [..] scanning {name} …{Style.RESET_ALL}\r")
+            sys.stdout.flush()
+        with contextlib.redirect_stdout(io.StringIO()):
+            _dispatch_audit(ext, file_path, audit_obj)
+        if is_tty:
+            sys.stdout.write("\r\033[K")   # clear the transient line
+            sys.stdout.flush()
+        _print_file_progress(file_path, audit_obj)
 
 if __name__ == "__main__":
     print(f"\n{Fore.CYAN}\u26d4  OVERFLOW GUARD {VERSION} | Researcher: {RESEARCHER_NAME}")
@@ -1449,8 +1501,12 @@ if __name__ == "__main__":
                          help="Generate a sample .overflowguard.yml and exit")
     _parser.add_argument("--init-rules", action="store_true",
                          help="Generate sample custom rules directory and exit")
+    _parser.add_argument("-v", "--verbose", action="store_true",
+                         help="Show full per-engine finding detail (default: "
+                              "one concise summary line per file)")
 
     _cli = _parser.parse_args(sys.argv[1:])
+    VERBOSE = _cli.verbose
 
     # Handle early-exit commands
     if _cli.init_config:
