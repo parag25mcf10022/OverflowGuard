@@ -600,48 +600,83 @@ class RealDataflowAnalyzer:
         if lang not in ("c", "cpp"):
             return findings
 
+        call_types = queries._CALL_TYPES.get(lang, set())
         for func in queries.find_functions(root):
-            freed_vars: Set[str] = set()
-            # Walk statements in order
-            stmts = list(func.walk_named())
-            free_lines: Dict[str, int] = {}
-            for node in stmts:
-                # Check for free calls
-                call_types = queries._CALL_TYPES.get(lang, set())
-                if node.type in call_types:
-                    cname = queries.call_name(node)
-                    if cname in ("free", "delete"):
-                        ids = queries.get_identifiers_in(node)
-                        ids.discard(cname)
-                        for v in ids:
-                            freed_vars.add(v)
-                            free_lines[v] = node.start_line
-                # Check for uses of freed vars
-                elif node.type == "identifier" and node.text in freed_vars:
-                    # Skip if this identifier is itself an argument to a
-                    # free()/delete call. walk_named() is a *preorder* walk, so
-                    # the free node is visited before its own argument child —
-                    # without this check `free(p)` reports `p` as "used after
-                    # freed" on the very same line (a false positive).
-                    in_free_call = any(
-                        anc.type in call_types
-                        and queries.call_name(anc) in ("free", "delete")
-                        for anc in node.ancestors()
-                    )
-                    if not in_free_call:
-                        snippet = ""
-                        if 0 < node.start_line <= len(source_lines):
-                            snippet = source_lines[node.start_line - 1].strip()
-                        fl = free_lines.get(node.text, 0)
-                        findings.append(DataflowFinding(
-                            issue_type="use-after-free",
-                            line=node.start_line,
-                            snippet=snippet,
-                            note=(f"'{node.text}' used at line {node.start_line} "
-                                  f"after being freed at line {fl}."),
-                            confidence="High",
-                        ))
+            # Track the *full freed lvalue text* (e.g. "p", "b->data",
+            # "arr[i]") → the line it was freed at.  Tracking the whole
+            # expression rather than the base identifier is essential:
+            # free(b->data) frees the member, not the container `b`, so later
+            # accesses to b->len / b->cap are NOT use-after-free.
+            freed: Dict[str, int] = {}
+            reported: Set[str] = set()
+            for node in func.walk_named():
+                ntype = node.type
+
+                # ---- free(EXPR) / delete EXPR → mark EXPR as dangling --------
+                if ntype in call_types and queries.call_name(node) in ("free", "delete"):
+                    expr = self._freed_lvalue(node)
+                    if expr:
+                        freed[expr] = node.start_line
+                    continue
+
+                # ---- reassignment clears the dangling state -----------------
+                # The canonical defensive pattern `ptr = NULL;` (or
+                # `ptr = malloc(...)`) right after free() makes ptr live again
+                # and must not be reported.
+                if ntype in ("assignment_expression", "init_declarator"):
+                    lhs = (node.child_by_field("left")
+                           or node.child_by_field("declarator")
+                           or (node.named_children[0] if node.named_children else None))
+                    if lhs is not None:
+                        freed.pop(lhs.text.strip(), None)
+                    continue
+
+                # ---- a read of a still-dangling lvalue → use-after-free -----
+                if ntype in ("identifier", "field_expression",
+                             "subscript_expression", "pointer_expression"):
+                    key = node.text.strip()
+                    if key not in freed or key in reported:
+                        continue
+                    # The freed expression itself appears as the argument of the
+                    # free() call (preorder walk visits it after the call node);
+                    # that is not a use.
+                    if self._inside_free_call(node, queries, call_types):
+                        continue
+                    fl = freed[key]
+                    snippet = ""
+                    if 0 < node.start_line <= len(source_lines):
+                        snippet = source_lines[node.start_line - 1].strip()
+                    findings.append(DataflowFinding(
+                        issue_type="use-after-free",
+                        line=node.start_line,
+                        snippet=snippet,
+                        note=(f"'{key}' used at line {node.start_line} after being "
+                              f"freed at line {fl} with no reassignment in between."),
+                        confidence="High",
+                    ))
+                    reported.add(key)
         return findings
+
+    @staticmethod
+    def _freed_lvalue(call_node: TSNode) -> str:
+        """Return the full text of the pointer expression passed to free()/delete."""
+        args = call_node.child_by_field("arguments")
+        if args and args.named_children:
+            return args.named_children[0].text.strip()
+        txt = call_node.text
+        i = txt.find("(")
+        j = txt.rfind(")")
+        if 0 <= i < j:
+            return txt[i + 1:j].strip()
+        return ""
+
+    @staticmethod
+    def _inside_free_call(node: TSNode, queries: "ASTQueries", call_types) -> bool:
+        """True when *node* sits inside a free()/delete call's argument list."""
+        for anc in node.ancestors():
+            if anc.type in call_types and queries.call_name(anc) in ("free", "delete"):
+                return True
+        return False
 
     def _check_unchecked_array(self, root: TSNode, queries: ASTQueries,
                                lang: str, source_lines: list) -> List[DataflowFinding]:

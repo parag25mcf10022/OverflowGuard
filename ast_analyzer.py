@@ -138,9 +138,34 @@ class ASTAnalyzer:
     # ------------------------------------------------------------------
     # libclang-based walk
     # ------------------------------------------------------------------
-    def _walk(self, node, heap_vars: set, freed_vars: set,
-              malloc_lines: list):
-        """Recursively walk the translation unit cursor."""
+    @staticmethod
+    def _expr_text(cursor) -> str:
+        """Full source text of an expression cursor (e.g. 'b->data', 'arr[i]')."""
+        try:
+            txt = "".join(t.spelling for t in cursor.get_tokens()).strip()
+            if txt:
+                return txt
+        except Exception:
+            pass
+        return (cursor.spelling or "").strip()
+
+    def _walk(self, node, heap_vars: set, freed_vars: dict,
+              malloc_lines: list, in_free_arg: bool = False):
+        """Recursively walk the translation unit cursor.
+
+        ``freed_vars`` maps a *freed lvalue expression* (the whole thing passed
+        to free(), e.g. ``b->data``) to the line it was freed at.  It is given a
+        fresh scope per function so a free() in one function never poisons
+        identifiers of the same name elsewhere, and an entry is dropped as soon
+        as its lvalue is reassigned (the safe ``ptr = NULL`` idiom).
+        """
+        # ---- Per-function scope for freed tracking ----
+        if node.kind == cindex.CursorKind.FUNCTION_DECL:
+            local_freed: dict = {}
+            for child in node.get_children():
+                self._walk(child, heap_vars, local_freed, malloc_lines, False)
+            return
+
         if node.kind == cindex.CursorKind.VAR_DECL:
             # Track variables initialised with malloc/calloc/realloc
             for child in node.get_children():
@@ -199,33 +224,41 @@ class ASTAnalyzer:
                                   node.location.column, "HIGH",
                                   "printf() format arg is a variable, not a literal")
 
-            # ---- free() → record pointer name, flag double-free ----
+            # ---- free(EXPR) → track the full freed lvalue, flag double-free ----
             elif fn in FREE_FUNCTIONS:
                 if args:
-                    toks = list(args[0].get_tokens())
-                    if toks:
-                        ptr_name = toks[0].spelling
-                        if ptr_name in freed_vars:
+                    expr = self._expr_text(args[0])
+                    if expr:
+                        if expr in freed_vars:
                             self._add("double-free", node.location.line,
                                       node.location.column, "HIGH",
-                                      f"double-free: free() called on '{ptr_name}' which was already freed")
-                        freed_vars.add(ptr_name)
-                        # Remember this argument's location so the recursive
-                        # walk doesn't later flag it as "used after free".
-                        argloc = toks[0].location
-                        self._freed_arg_locs.add(
-                            (ptr_name, argloc.line, argloc.column))
+                                      f"double-free: free() called on '{expr}' which was already freed")
+                        freed_vars[expr] = node.location.line
+                    # Walk the free() arguments with use-detection suppressed —
+                    # the freed expression appearing as the argument is not a use.
+                    for child in node.get_children():
+                        self._walk(child, heap_vars, freed_vars, malloc_lines, True)
+                    return
+
+        # ---- Reassignment clears the dangling state (ptr = NULL / = malloc) ----
+        if node.kind == cindex.CursorKind.BINARY_OPERATOR:
+            toks = list(node.get_tokens())
+            if any(t.spelling == "=" for t in toks):   # plain assignment, not == / +=
+                kids = list(node.get_children())
+                if kids:
+                    freed_vars.pop(self._expr_text(kids[0]), None)
 
         # ---- Use of a freed pointer ----
-        if node.kind in (cindex.CursorKind.DECL_REF_EXPR,
-                         cindex.CursorKind.MEMBER_REF_EXPR,
-                         cindex.CursorKind.ARRAY_SUBSCRIPT_EXPR):
-            if (node.spelling in freed_vars and
-                    (node.spelling, node.location.line, node.location.column)
-                    not in self._freed_arg_locs):
+        if (not in_free_arg and node.kind in (
+                cindex.CursorKind.DECL_REF_EXPR,
+                cindex.CursorKind.MEMBER_REF_EXPR,
+                cindex.CursorKind.ARRAY_SUBSCRIPT_EXPR)):
+            expr = self._expr_text(node)
+            if expr and expr in freed_vars:
                 self._add("use-after-free", node.location.line,
                           node.location.column, "HIGH",
-                          f"Pointer '{node.spelling}' used after free()")
+                          f"'{expr}' used after free() (freed at line {freed_vars[expr]})")
+                freed_vars.pop(expr, None)   # report once per free
 
         # ---- off-by-one: loop using <= against buffer size ----
         if node.kind == cindex.CursorKind.FOR_STMT:
@@ -236,7 +269,7 @@ class ASTAnalyzer:
                           "for-loop uses '<=' against sizeof/constant — potential off-by-one")
 
         for child in node.get_children():
-            self._walk(child, heap_vars, freed_vars, malloc_lines)
+            self._walk(child, heap_vars, freed_vars, malloc_lines, in_free_arg)
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -255,7 +288,7 @@ class ASTAnalyzer:
                     options=(cindex.TranslationUnit
                              .PARSE_DETAILED_PROCESSING_RECORD))
                 heap_vars: set = set()
-                freed_vars: set = set()
+                freed_vars: dict = {}
                 malloc_lines: list = []
                 self._walk(tu.cursor, heap_vars, freed_vars, malloc_lines)
             except Exception:
@@ -347,10 +380,20 @@ class ASTAnalyzer:
                     note=f"Regex: double-free of '{ptr}' (also freed at line {freed_positions[ptr]})"))
             else:
                 freed_positions[ptr] = free_line
-                rest = src[m.end():]
-                use_m = re.search(r'\b' + re.escape(ptr) + r'\b', rest)
-                if use_m:
-                    use_line = free_line + rest[:use_m.start()].count("\n")
+                # Scope the search to (roughly) the rest of the enclosing block
+                # so a free() does not reach into later functions.
+                window = src[m.end():m.end() + 1200]
+                blk_end = window.find("\n}")
+                if blk_end != -1:
+                    window = window[:blk_end]
+                pe = re.escape(ptr)
+                # A reassignment (ptr = ...) before any use makes ptr live again.
+                reassign = re.search(r'\b' + pe + r'\b\s*=\s*[^=]', window)
+                # A genuine *use*: dereference, member/array access, or passing
+                # the pointer somewhere — not `ptr = ...` and not `ptr == NULL`.
+                use_m = re.search(r'(?:\*\s*)?\b' + pe + r'\b\s*(?:->|\[|\)|,|;|\.)', window)
+                if use_m and (reassign is None or use_m.start() < reassign.start()):
+                    use_line = free_line + window[:use_m.start()].count("\n")
                     findings.append(ASTFinding(
                         issue_type="use-after-free", line=use_line, col=0,
                         snippet=self._snippet(use_line), confidence="HIGH",
