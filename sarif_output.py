@@ -172,7 +172,10 @@ def generate_sarif(
     # ── 1. SAST findings from AuditManager ────────────────────────────────
     for file_path, findings_list in audit_manager.report_data.items():
         for finding in findings_list:
-            rule_id  = finding.get("type", "unknown")
+            # AuditManager records store the vuln family under "issue"; older
+            # callers used "type". Accept either so the SARIF ruleId/message
+            # carry the real rule name instead of collapsing to "unknown".
+            rule_id  = finding.get("issue") or finding.get("type") or "unknown"
             severity = finding.get("severity", "MEDIUM")
             line     = finding.get("line", 1)
             snippet  = finding.get("snippet", "")

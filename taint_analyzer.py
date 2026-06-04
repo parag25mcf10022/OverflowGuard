@@ -406,7 +406,10 @@ PY_SINK_RULES = [
      "Flask debug=True enables the Werkzeug debugger — never enable in production"),
 
     # Template injection (Jinja2 / str.format with user input)
-    (re.compile(r'render_template_string\s*\(|Template\s*\(\s*(?!["\'f])'),
+    # \bTemplate\( only — without the word boundary this matched unrelated
+    # constructors like reportlab's SimpleDocTemplate(...) and produced a
+    # bogus CRITICAL template-injection finding.
+    (re.compile(r'render_template_string\s*\(|\bTemplate\s*\(\s*(?!["\'f)])'),
      "template-injection", "HIGH",
      "Jinja2 render_template_string with variable template — risk of SSTI"),
 

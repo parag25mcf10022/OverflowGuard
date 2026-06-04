@@ -1074,13 +1074,28 @@ def audit_python(file_path, audit_obj):
                              capture_output=True, text=True)
         if res.stdout:
             data = json.loads(res.stdout)
+            is_test = _is_test_file(file_path)
             seen_types: set = set()
             for issue in data.get('results', []):
                 # Map Bandit test IDs to our VULN_DATA where possible
                 test_id   = issue.get("test_id", "")
+                # Pure code-smell / informational rules are not vulnerabilities.
+                if test_id in _BANDIT_SKIP:
+                    continue
+                # asserts (B101) and bare try/except smells are expected in test
+                # files — don't flag them there.
+                if is_test and test_id in _BANDIT_TEST_NOISE:
+                    continue
                 vuln_type = _bandit_map(test_id)
+                if vuln_type is None:
+                    continue
                 line_num  = issue.get("line_number", "N/A")
                 msg       = issue.get("issue_text", "")
+                # Honour Bandit's own severity/confidence instead of forcing the
+                # vuln-family default — this stops asserts/try-except being
+                # reported as HIGH/CRITICAL.
+                b_sev  = issue.get("issue_severity")
+                b_conf = issue.get("issue_confidence")
                 dedup_key = (vuln_type, line_num)
                 if dedup_key in seen_types:
                     continue
@@ -1089,7 +1104,9 @@ def audit_python(file_path, audit_obj):
                 audit_obj.add_finding(file_path, "SAST(bandit)", vuln_type,
                                       line_override=line_num,
                                       snippet_override=issue.get("code", "").strip(),
-                                      note_override=msg)
+                                      note_override=msg,
+                                      severity_override=b_sev,
+                                      confidence_override=b_conf)
     except Exception:
         pass
 
@@ -1132,15 +1149,43 @@ _BANDIT_MAP = {
     "B506": "insecure-deserialization",  # yaml.load
     # SQL
     "B608": "sql-injection",
-    # Path traversal
-    "B101": "insecure-config",  # assert used for security
+    # Low-value code smells — kept but mapped to a benign family so they are
+    # never escalated past Bandit's own (LOW) severity.
+    "B101": "insecure-config",  # assert used
     "B110": "insecure-config",  # try/except pass
-    "B404": "os-command-injection",  # import subprocess
+    "B112": "insecure-config",  # try/except continue
 }
 
+# Rules that are pure noise on real code bases — never emit a finding.
+#   B404 — merely importing the subprocess module (the dangerous *call* is
+#          caught separately by B602-B607).
+_BANDIT_SKIP = {"B404"}
 
-def _bandit_map(test_id: str) -> str:
-    return _BANDIT_MAP.get(test_id, "os-injection")
+# Rules that are expected/benign inside test files (asserts, broad excepts).
+_BANDIT_TEST_NOISE = {"B101", "B110", "B112"}
+
+
+def _is_test_file(path: str) -> bool:
+    """True for pytest/unittest files where asserts and broad excepts are normal."""
+    base = os.path.basename(path)
+    return (
+        base.startswith("test_")
+        or base.endswith("_test.py")
+        or base == "conftest.py"
+        or f"{os.sep}tests{os.sep}" in path
+        or f"{os.sep}test{os.sep}" in path
+    )
+
+
+def _bandit_map(test_id: str):
+    """Map a Bandit test id to a vuln family, or None if it is unrecognised.
+
+    Unknown ids previously defaulted to ``os-injection`` (CRITICAL), which
+    turned every unmapped smell into a false critical. Unknown ids now fall
+    back to a generic ``insecure-config`` family and rely on Bandit's own
+    severity rather than being dropped or escalated.
+    """
+    return _BANDIT_MAP.get(test_id, "insecure-config")
 
 def audit_go(file_path, audit_obj):
     print(f"{Fore.YELLOW}[*] Running Go Race Detector, Taint Analysis & Fuzzer...")

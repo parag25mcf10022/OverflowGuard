@@ -209,16 +209,28 @@ def _severity_from_osv(vuln: dict) -> Tuple[str, float]:
 
 
 def _fixed_version(vuln: dict, ecosystem: str, pkg: str) -> Optional[str]:
-    """Extract the earliest fixed version from the OSV vulnerability entry."""
+    """Extract the earliest fixed version from the OSV vulnerability entry.
+
+    Prefer ECOSYSTEM/SEMVER ranges (which yield real version numbers like
+    ``3.9.4``) over GIT ranges (which yield opaque commit hashes). Falling back
+    to a commit hash as a "fix" is useless to a user upgrading a package.
+    """
+    semver_fix: Optional[str] = None
+    git_fix: Optional[str] = None
     for affected in vuln.get("affected", []):
         if affected.get("package", {}).get("name", "").lower() != pkg.lower():
             continue
         for rng in affected.get("ranges", []):
+            rng_type = rng.get("type", "").upper()
             for evt in rng.get("events", []):
                 v = evt.get("fixed")
-                if v:
-                    return v
-    return None
+                if not v:
+                    continue
+                if rng_type == "GIT":
+                    git_fix = git_fix or v
+                else:
+                    semver_fix = semver_fix or v
+    return semver_fix or git_fix
 
 
 # ---------------------------------------------------------------------------
@@ -514,21 +526,37 @@ def run_sca(root_path: str, verbose: bool = True) -> Tuple[
         if not dep.version:
             continue   # skip unpinned deps (nothing to query)
         vulns = _osv_query(dep.name, dep.version, dep.ecosystem)
+        # OSV often returns several entries for the same CVE (e.g. a PYSEC and a
+        # GHSA record both aliased to one CVE). Collapse them per (dep, CVE) so a
+        # single vulnerability is reported once — preferring the record that
+        # carries a real semver fix.
+        seen_cves: Dict[str, ScaFinding] = {}
         for v in vulns:
             severity, cvss = _severity_from_osv(v)
             fixed = _fixed_version(v, dep.ecosystem, dep.name)
             cve_ids = [a for a in v.get("aliases", []) if a.startswith("CVE-")]
             cve_id  = cve_ids[0] if cve_ids else v.get("id", "OSV-UNKNOWN")
             summary = v.get("summary", "No description available.")
-            sca_findings.append(ScaFinding(
+            finding = ScaFinding(
                 dep=dep, cve_id=cve_id, summary=summary,
                 severity=severity, cvss=cvss,
                 fixed_version=fixed, aliases=v.get("aliases", []),
-            ))
+            )
+            prev = seen_cves.get(cve_id)
+            if prev is not None:
+                # Keep whichever record has an actual version fix.
+                if not prev.fixed_version and fixed:
+                    seen_cves[cve_id] = finding
+                continue
+            seen_cves[cve_id] = finding
+
+        for finding in seen_cves.values():
+            sca_findings.append(finding)
             if verbose:
-                fix_str = f" → fix: {fixed}" if fixed else ""
+                fix_str = f" → fix: {finding.fixed_version}" if finding.fixed_version else ""
                 print(f"  [SCA] {Fore_RED}{dep.name} {dep.version} — "
-                      f"{cve_id} ({severity} CVSS:{cvss:.1f}){fix_str}{Style_RESET}")
+                      f"{finding.cve_id} ({finding.severity} "
+                      f"CVSS:{finding.cvss:.1f}){fix_str}{Style_RESET}")
 
         lf = _check_license(dep)
         if lf:
