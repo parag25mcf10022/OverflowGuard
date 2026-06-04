@@ -17,6 +17,45 @@ try:
 except ImportError:
     CLANG_AVAILABLE = False
 
+
+# Control-flow keywords that may precede a call (so they are not return types).
+_DECL_PREFIX_NONTYPES = {
+    "return", "if", "while", "for", "switch", "else", "do", "sizeof",
+    "case", "goto",
+}
+
+
+def _mask_strings_and_comments(src: str) -> str:
+    """Blank the interior of C/C++ string/char literals and comments while
+    preserving length and newlines, so regex sink matching does not fire on
+    tokens that appear inside strings (e.g. `gets(` in a printf format) or
+    comments."""
+    pattern = re.compile(
+        r'("(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\')'
+        r'|(/\*.*?\*/)|(//[^\n]*)',
+        re.DOTALL,
+    )
+
+    def _blank(text: str) -> str:
+        return "".join("\n" if c == "\n" else " " for c in text)
+
+    def repl(m: "re.Match") -> str:
+        text = m.group(0)
+        if m.group(1) and len(text) >= 2:
+            return text[0] + _blank(text[1:-1]) + text[-1]
+        return _blank(text)
+
+    return pattern.sub(repl, src)
+
+
+def _looks_like_declaration(prefix: str) -> bool:
+    """True when a callee name is a prototype/definition (preceded by a return
+    type) rather than a real call. `prefix` is the line text before the name."""
+    m = re.search(r"([A-Za-z_]\w*)\s*[\*&\s]*$", prefix)
+    if not m:
+        return False
+    return m.group(1) not in _DECL_PREFIX_NONTYPES
+
 # ---------------------------------------------------------------------------
 # Dangerous sink functions → vulnerability type
 # ---------------------------------------------------------------------------
@@ -232,7 +271,10 @@ class ASTAnalyzer:
     # Regex-only fallback
     # ------------------------------------------------------------------
     def _regex_fallback(self) -> List[ASTFinding]:
-        src = "".join(self._lines)
+        # Match against a copy with string/char literals and comments blanked
+        # so we don't flag tokens inside strings/comments; snippets still come
+        # from self._lines (the original text).
+        src = _mask_strings_and_comments("".join(self._lines))
         findings: List[ASTFinding] = []
 
         has_malloc = bool(re.search(
@@ -254,6 +296,13 @@ class ASTAnalyzer:
         ]:
             for m in re.finditer(pattern, src):
                 ln = src[:m.start()].count("\n") + 1
+                # Skip prototypes / definitions, e.g. `char *gets(char *str);`
+                line_start = src.rfind("\n", 0, m.start()) + 1
+                if _looks_like_declaration(src[line_start:m.start()]):
+                    continue
+                # Function name comes from the *match*, not the pattern string
+                # (matching the pattern's `\b` literal produced "bgets" etc.).
+                fname = m.group(0).split("(")[0].strip()
                 # Look 8 lines back for a heap alloc
                 context_start = max(0, m.start() - 300)
                 ctx = src[context_start:m.start()]
@@ -264,8 +313,7 @@ class ASTAnalyzer:
                 findings.append(ASTFinding(
                     issue_type=issue, line=ln, col=0,
                     snippet=self._snippet(ln), confidence="MEDIUM",
-                    note="Regex: dangerous call to "
-                         + re.search(r"\b\w+", pattern).group() + "()"))
+                    note=f"Regex: dangerous call to {fname}()"))
 
         # scanf with unbounded %s
         for m in re.finditer(r"\bscanf\s*\(", src):

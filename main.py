@@ -1276,6 +1276,20 @@ def analyze_file(file_path, audit_obj):
 
 if __name__ == "__main__":
     print(f"\n{Fore.CYAN}\u26d4  OVERFLOW GUARD {VERSION} | Researcher: {RESEARCHER_NAME}")
+
+    # \u2500\u2500 Loudly warn when running in a degraded engine configuration \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+    if not TS_AVAILABLE:
+        print(f"{Fore.RED}{'='*70}")
+        print(f"{Fore.RED}\u26a0  DEGRADED MODE: tree-sitter is NOT installed in this interpreter.")
+        print(f"{Fore.YELLOW}   Stage 0 (real AST + CFG dataflow + Z3 symbolic + FP filter) is")
+        print(f"{Fore.YELLOW}   SKIPPED. Results fall back to regex/heuristics and will be far")
+        print(f"{Fore.YELLOW}   less accurate (more false positives, missed bugs).")
+        print(f"{Fore.YELLOW}   Fix: pip install tree_sitter tree_sitter_languages   "
+              f"(or run with the project venv).")
+        print(f"{Fore.RED}{'='*70}{Style.RESET_ALL}")
+    if not CLANG_AVAILABLE:
+        print(f"{Fore.YELLOW}\u26a0  libclang not available \u2014 C/C++ AST sink analysis uses the "
+              f"regex fallback.{Style.RESET_ALL}")
     # ── Parse CLI arguments via argparse ─────────────────────────────────────
     import argparse as _argparse
 
