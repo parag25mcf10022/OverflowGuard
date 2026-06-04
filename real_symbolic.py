@@ -563,6 +563,14 @@ class RealSymbolicAnalyzer:
         if lang is None:
             return []
 
+        # The symbolic checks here (buffer overflow, array out-of-bounds,
+        # bitvector integer wrap-around) model C/C++ semantics: fixed-width
+        # integers and raw arrays. In managed languages integers are
+        # arbitrary-precision (no wrap) and subscripts are bounds-checked, so
+        # running these proofs there only produces false positives.
+        if lang not in ("c", "cpp"):
+            return []
+
         root, queries = parse_file(file_path)
         if root is None:
             return []

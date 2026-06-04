@@ -126,29 +126,85 @@ def _osv_query(package: str, version: str, ecosystem: str) -> List[dict]:
     return []
 
 
+def _cvss3_base_score(vector: str) -> float:
+    """Compute the CVSS v3.0/v3.1 base score from a vector string.
+
+    OSV stores the CVSS *vector* (e.g. "CVSS:3.1/AV:N/AC:L/...") in
+    severity[].score — it contains no numeric score, so we derive it with the
+    official base-score formula. Returns 0.0 for non-v3 vectors (e.g. v4.0,
+    which uses a different model) or unparseable input.
+    """
+    import math
+    if not vector.startswith("CVSS:3"):
+        return 0.0
+    p = {}
+    for part in vector.split("/")[1:]:
+        if ":" in part:
+            k, _, val = part.partition(":")
+            p[k] = val
+    try:
+        av = {"N": 0.85, "A": 0.62, "L": 0.55, "P": 0.2}[p["AV"]]
+        ac = {"L": 0.77, "H": 0.44}[p["AC"]]
+        ui = {"N": 0.85, "R": 0.62}[p["UI"]]
+        scope_changed = p["S"] == "C"
+        pr = ({"N": 0.85, "L": 0.68, "H": 0.5} if scope_changed
+              else {"N": 0.85, "L": 0.62, "H": 0.27})[p["PR"]]
+        c = {"H": 0.56, "L": 0.22, "N": 0.0}[p["C"]]
+        i = {"H": 0.56, "L": 0.22, "N": 0.0}[p["I"]]
+        a = {"H": 0.56, "L": 0.22, "N": 0.0}[p["A"]]
+    except KeyError:
+        return 0.0
+    iss = 1 - (1 - c) * (1 - i) * (1 - a)
+    if scope_changed:
+        impact = 7.52 * (iss - 0.029) - 3.25 * (iss - 0.02) ** 15
+    else:
+        impact = 6.42 * iss
+    if impact <= 0:
+        return 0.0
+    exploitability = 8.22 * av * ac * pr * ui
+    raw = (1.08 * (impact + exploitability)) if scope_changed else (impact + exploitability)
+    return min(math.ceil(raw * 10) / 10, 10.0)   # CVSS round-up to 1 decimal
+
+
+# GHSA qualitative label → representative CVSS number (used when only a
+# qualitative severity is available, e.g. CVSS v4-only advisories).
+_QUAL_LABEL = {"CRITICAL": "CRITICAL", "HIGH": "HIGH",
+               "MODERATE": "MEDIUM", "MEDIUM": "MEDIUM", "LOW": "LOW"}
+_QUAL_SCORE = {"CRITICAL": 9.5, "HIGH": 8.0, "MEDIUM": 5.5, "LOW": 2.5}
+
+
 def _severity_from_osv(vuln: dict) -> Tuple[str, float]:
-    """Extract the highest CVSS score and map to severity label."""
+    """Extract the best CVSS score and severity label from an OSV advisory.
+
+    Prefers a computed CVSS v3 base score; falls back to the human-vetted GHSA
+    qualitative label (`database_specific.severity`) for advisories that only
+    carry a v4 vector or no numeric score.
+    """
     best_score = 0.0
     for sev in vuln.get("severity", []):
         raw = sev.get("score", "")
-        m = re.search(r"CVSS:[\d.]+/.*?/(\d+\.\d+)", raw)
-        if not m:
-            m = re.search(r"(\d+\.\d+)\s*$", raw)
-        if m:
-            best_score = max(best_score, float(m.group(1)))
-    # Fallback — check database_specific
-    if best_score == 0:
-        for entry in vuln.get("database_specific", {}).get("severity", []):
-            try:
-                best_score = max(best_score, float(entry.get("score", 0)))
-            except Exception:
-                pass
-    label = (
-        "CRITICAL" if best_score >= 9.0 else
-        "HIGH"     if best_score >= 7.0 else
-        "MEDIUM"   if best_score >= 4.0 else
-        "LOW"
-    )
+        score = _cvss3_base_score(raw)
+        if score == 0.0 and "/" not in raw:
+            # a bare numeric score (rare)
+            m = re.search(r"\b(\d+(?:\.\d+)?)\b", raw)
+            if m:
+                score = float(m.group(1))
+        best_score = max(best_score, score)
+
+    qual = str(vuln.get("database_specific", {}).get("severity", "")).strip().upper()
+
+    if best_score > 0:
+        label = (
+            "CRITICAL" if best_score >= 9.0 else
+            "HIGH"     if best_score >= 7.0 else
+            "MEDIUM"   if best_score >= 4.0 else
+            "LOW"
+        )
+    elif qual in _QUAL_LABEL:
+        label = _QUAL_LABEL[qual]
+        best_score = _QUAL_SCORE[label]   # representative score for display
+    else:
+        label = "LOW"
     return label, best_score
 
 

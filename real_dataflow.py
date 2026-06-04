@@ -646,6 +646,12 @@ class RealDataflowAnalyzer:
     def _check_unchecked_array(self, root: TSNode, queries: ASTQueries,
                                lang: str, source_lines: list) -> List[DataflowFinding]:
         findings: List[DataflowFinding] = []
+        # Out-of-bounds array indexing is a C/C++ concern. Managed languages
+        # (Python, Java, Go, JS, …) bounds-check subscripts at runtime, so
+        # `d[key]` / `lst[i]` there is not a buffer overflow — flagging it is a
+        # false positive.
+        if lang not in ("c", "cpp"):
+            return findings
         for func in queries.find_functions(root):
             accesses = queries.find_array_accesses(func)
             ifs = queries.find_ifs(func)

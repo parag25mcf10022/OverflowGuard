@@ -114,6 +114,36 @@ _SKIP_VALUE_PATTERNS = re.compile(
 _SKIP_EXTENSIONS = {".pyc", ".png", ".jpg", ".jpeg", ".gif", ".svg",
                     ".ico", ".woff", ".woff2", ".ttf", ".eot", ".min.js"}
 
+# A value that is (almost entirely) a runtime interpolation placeholder is not
+# a hard-coded secret — e.g. f"...{secret}", "${TOKEN}", "%(key)s", "{0}".
+_INTERP_RE = re.compile(r"\{[^{}]*\}|\$\{[^}]*\}|\$\w+|%\([^)]*\)[sd]|%[sd]")
+# Regex/detection-pattern metacharacters. Security tools store patterns that
+# *match* secrets (e.g. r"AccountKey=[A-Za-z0-9+/=]{88}") — flagging those as
+# leaked secrets is a false positive ("scanner scanning a scanner").
+_REGEX_META_RE = re.compile(r"\\[wdsbWDSB]|\[[A-Za-z0-9^\\].*?\]|\(\?[:ismx]|"
+                            r"\{\d+(?:,\d*)?\}|\.\*|\.\+|\\\.|\(\?P<")
+# Line assigns to (or is a dict entry for) a pattern/regex/rule field. The
+# optional quote handles both `pattern = ...` and `"pattern": ...` dict keys.
+_PATTERN_CONTEXT_RE = re.compile(r"(?i)\b(pattern|patterns|regex|rule|rules|"
+                                 r"signature|matcher|_re)\b['\"]?\s*[=:]")
+
+
+def _is_non_literal_secret(matched_val: str, line: str) -> bool:
+    """True when a 'secret' match is actually an interpolation placeholder or a
+    regex/detection pattern rather than a hard-coded literal."""
+    qv = re.search(r"['\"]([^'\"]*)['\"]", matched_val)
+    literal = qv.group(1) if qv else matched_val
+    # mostly an interpolation expression → not a literal secret
+    residue = _INTERP_RE.sub("", literal).strip(" \t:=;,-_\"'")
+    if len(residue) < 4:
+        return True
+    # regex / detection pattern
+    if _REGEX_META_RE.search(matched_val) or _REGEX_META_RE.search(literal):
+        return True
+    if _PATTERN_CONTEXT_RE.search(line):
+        return True
+    return False
+
 # ---------------------------------------------------------------------------
 # Entropy helper
 # ---------------------------------------------------------------------------
@@ -188,6 +218,8 @@ def scan_file(file_path: str) -> List[SecretFinding]:
             matched_val = m.group(group) if group > 0 and len(m.groups()) >= group else m.group(0)
             if _SKIP_VALUE_PATTERNS.search(matched_val):
                 continue
+            if _is_non_literal_secret(matched_val, line):
+                continue
             entropy = _shannon_entropy(matched_val)
             findings.append(SecretFinding(
                 file_path=file_path, line=line_no,
@@ -202,7 +234,8 @@ def scan_file(file_path: str) -> List[SecretFinding]:
         em = _HIGH_ENTROPY_RE.search(line)
         if em:
             val = em.group(1)
-            if len(val) >= _MIN_SECRET_LEN and not _SKIP_VALUE_PATTERNS.search(val):
+            if (len(val) >= _MIN_SECRET_LEN and not _SKIP_VALUE_PATTERNS.search(val)
+                    and not _is_non_literal_secret(val, line)):
                 ent = _shannon_entropy(val)
                 if ent >= _ENTROPY_THRESHOLD:
                     # Don't duplicate if already caught by pattern scan

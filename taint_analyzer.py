@@ -61,6 +61,86 @@ def _snippet_at(lines: List[str], ln: int) -> str:
     return ""
 
 
+def _mask_strings_and_comments(src: str, lang: str) -> str:
+    """Blank the interior of string/char literals and the body of comments,
+    preserving length and newline positions so offsets/line numbers computed
+    on the result still line up with the original source.
+
+    Without this, taint patterns match keywords like ``eval(`` or ``system(``
+    that merely appear inside documentation strings, remediation text,
+    payload/PoC literals, or comments — a large false-positive source on tools
+    that *talk about* attacks (e.g. security scanners).
+    """
+    if lang == "python":
+        pattern = re.compile(
+            r'("""(?:\\.|[^\\])*?"""|\'\'\'(?:\\.|[^\\])*?\'\'\''
+            r'|"(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\')'
+            r'|(\#[^\n]*)',
+            re.DOTALL,
+        )
+    else:
+        # c / java / go / rust — include Go/Rust backtick & raw strings
+        pattern = re.compile(
+            r'("(?:\\.|[^"\\])*"|\'(?:\\.|[^\'\\])*\'|`[^`]*`)'
+            r'|(/\*.*?\*/)|(//[^\n]*)',
+            re.DOTALL,
+        )
+
+    def _blank(text: str) -> str:
+        return "".join("\n" if c == "\n" else " " for c in text)
+
+    def repl(m: "re.Match") -> str:
+        text = m.group(0)
+        if m.group(1) and len(text) >= 2:
+            return text[0] + _blank(text[1:-1]) + text[-1]
+        return _blank(text)
+
+    return pattern.sub(repl, src)
+
+
+# weak-crypto context — security-sensitive hashing should always be flagged;
+# md5/sha1 used for non-security purposes (cache keys, ETags, content
+# fingerprints, dedup) is not a vulnerability and flagging it is noise.
+# Tokens are matched as identifier *parts* (delimited by non-letters such as
+# `_`) so `base_body`/`cache_key` match but `security` does not match "uri".
+def _ident_ctx(words: List[str]) -> "re.Pattern":
+    return re.compile(r"(?i)(?:^|[^A-Za-z])(?:" + "|".join(words) + r")(?:[^A-Za-z]|$)")
+
+_HASH_SECURITY_CTX = _ident_ctx([
+    "password", "passwd", "pwd", "secret", "token", "credential", "hmac",
+    "signature", "sign", "salt", "auth", "session", "cookie", "csrf",
+    "nonce", "otp", "privatekey", "cert"])
+_HASH_NONSECURITY_CTX = _ident_ctx([
+    "cache", "etag", "fingerprint", "checksum", "dedup", "body", "response",
+    "resp", "content", "payload", "url", "uri", "path", "file", "filename",
+    "color", "colour", "seed", "uuid", "guid", "bucket", "hash"])
+
+
+def _weak_crypto_should_skip(line: str) -> bool:
+    """True when an md5/sha1 use on *line* is non-security (cache/fingerprint/…)
+    and therefore a false positive. Security-sensitive context always wins."""
+    if _HASH_SECURITY_CTX.search(line):
+        return False
+    return bool(_HASH_NONSECURITY_CTX.search(line))
+
+
+def _code_finditer(pattern, src: str, masked: str):
+    """Yield matches of *pattern* in *src* whose start is real code.
+
+    Matching runs on the raw source (so content/look-ahead checks still see
+    string contents), but matches whose start offset falls inside a string
+    literal or comment — i.e. where the mask blanked the character — are
+    skipped. This drops sink keywords (eval/exec/system/…) that merely appear
+    in documentation, comments, or payload literals without affecting
+    detectors that legitimately inspect string contents.
+    """
+    for m in re.finditer(pattern, src):
+        s = m.start()
+        if s < len(masked) and masked[s] != src[s]:
+            continue  # match begins inside a string/comment
+        yield m
+
+
 # ---------------------------------------------------------------------------
 # C / C++ taint rules
 # ---------------------------------------------------------------------------
@@ -224,13 +304,13 @@ C_SANITIZERS = [
 ]
 
 
-def _analyze_c(src: str, lines: List[str]) -> List[TaintFinding]:
+def _analyze_c(src: str, lines: List[str], masked: str) -> List[TaintFinding]:
     findings: List[TaintFinding] = []
     seen: set = set()
 
     # ---- double-free detection: collect free(ptr) lines per pointer ----
     free_calls: dict = {}
-    for m in re.finditer(r"\bfree\s*\(\s*([a-zA-Z_]\w*)\s*\)", src):
+    for m in _code_finditer(r"\bfree\s*\(\s*([a-zA-Z_]\w*)\s*\)", src, masked):
         ptr = m.group(1)
         ln = _lnum(src, m.start())
         free_calls.setdefault(ptr, []).append(ln)
@@ -252,8 +332,10 @@ def _analyze_c(src: str, lines: List[str]) -> List[TaintFinding]:
     for pattern, issue, confidence, note in C_SINK_RULES:
         if issue == "double-free":
             continue  # handled above
-        for m in re.finditer(pattern, src):
+        for m in _code_finditer(pattern, src, masked):
             ln = _lnum(src, m.start())
+            if issue == "weak-crypto" and _weak_crypto_should_skip(_snippet_at(lines, ln)):
+                continue
             key = (issue, ln)
             if key in seen:
                 continue
@@ -350,12 +432,14 @@ PY_SINK_RULES = [
 ]
 
 
-def _analyze_python(src: str, lines: List[str]) -> List[TaintFinding]:
+def _analyze_python(src: str, lines: List[str], masked: str) -> List[TaintFinding]:
     findings: List[TaintFinding] = []
     seen: set = set()
     for pattern, issue, confidence, note in PY_SINK_RULES:
-        for m in re.finditer(pattern, src):
+        for m in _code_finditer(pattern, src, masked):
             ln = _lnum(src, m.start())
+            if issue == "weak-crypto" and _weak_crypto_should_skip(_snippet_at(lines, ln)):
+                continue
             key = (issue, ln)
             if key in seen:
                 continue
@@ -441,12 +525,14 @@ JAVA_SINK_RULES = [
 ]
 
 
-def _analyze_java(src: str, lines: List[str]) -> List[TaintFinding]:
+def _analyze_java(src: str, lines: List[str], masked: str) -> List[TaintFinding]:
     findings: List[TaintFinding] = []
     seen: set = set()
     for pattern, issue, confidence, note in JAVA_SINK_RULES:
-        for m in re.finditer(pattern, src):
+        for m in _code_finditer(pattern, src, masked):
             ln = _lnum(src, m.start())
+            if issue == "weak-crypto" and _weak_crypto_should_skip(_snippet_at(lines, ln)):
+                continue
             key = (issue, ln)
             if key in seen:
                 continue
@@ -522,12 +608,14 @@ GO_SINK_RULES = [
 ]
 
 
-def _analyze_go(src: str, lines: List[str]) -> List[TaintFinding]:
+def _analyze_go(src: str, lines: List[str], masked: str) -> List[TaintFinding]:
     findings: List[TaintFinding] = []
     seen: set = set()
     for pattern, issue, confidence, note in GO_SINK_RULES:
-        for m in re.finditer(pattern, src):
+        for m in _code_finditer(pattern, src, masked):
             ln = _lnum(src, m.start())
+            if issue == "weak-crypto" and _weak_crypto_should_skip(_snippet_at(lines, ln)):
+                continue
             key = (issue, ln)
             if key in seen:
                 continue
@@ -583,12 +671,14 @@ RUST_SINK_RULES = [
 ]
 
 
-def _analyze_rust(src: str, lines: List[str]) -> List[TaintFinding]:
+def _analyze_rust(src: str, lines: List[str], masked: str) -> List[TaintFinding]:
     findings: List[TaintFinding] = []
     seen: set = set()
     for pattern, issue, confidence, note in RUST_SINK_RULES:
-        for m in re.finditer(pattern, src):
+        for m in _code_finditer(pattern, src, masked):
             ln = _lnum(src, m.start())
+            if issue == "weak-crypto" and _weak_crypto_should_skip(_snippet_at(lines, ln)):
+                continue
             key = (issue, ln)
             if key in seen:
                 continue
@@ -633,6 +723,7 @@ class TaintAnalyzer:
             return []
 
         lines = _lines_of(src)
+        masked = _mask_strings_and_comments(src, lang)
 
         dispatch = {
             "c":      _analyze_c,
@@ -641,4 +732,4 @@ class TaintAnalyzer:
             "go":     _analyze_go,
             "rust":   _analyze_rust,
         }
-        return dispatch[lang](src, lines)
+        return dispatch[lang](src, lines, masked)
