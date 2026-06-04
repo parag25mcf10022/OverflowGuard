@@ -172,6 +172,11 @@ def generate_sarif(
     # ── 1. SAST findings from AuditManager ────────────────────────────────
     for file_path, findings_list in audit_manager.report_data.items():
         for finding in findings_list:
+            # SCA / secrets findings are injected into report_data so they show
+            # up in the HTML scorecard, but they have dedicated SARIF sections
+            # below. Skip them here to avoid emitting each one twice.
+            if finding.get("stage") in ("SCA", "Secrets"):
+                continue
             # AuditManager records store the vuln family under "issue"; older
             # callers used "type". Accept either so the SARIF ruleId/message
             # carry the real rule name instead of collapsing to "unknown".

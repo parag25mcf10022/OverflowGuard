@@ -98,6 +98,31 @@ _CROSS_FILE_SINKS: Dict[str, List[str]] = {
 }
 
 
+# Plain substring matching of these tokens is far too loose: a function whose
+# body merely contains the letters "input" (input_type, a dict key, a comment)
+# or a file that contains "exec" (inside "execute"/"execution") would be marked
+# tainted. Compile each token into a pattern that requires a real call or
+# attribute access so only genuine sources/sinks match.
+def _compile_token(tok: str) -> "re.Pattern":
+    if "." in tok or "(" in tok:
+        # dotted attribute / qualified call — match literally, bounded on the left
+        return re.compile(r"(?<![\w.])" + re.escape(tok))
+    # bare name — require a call: input( / eval( / system(
+    return re.compile(r"(?<![\w.])" + re.escape(tok) + r"\s*\(")
+
+
+_SOURCE_PATS: Dict[str, List["re.Pattern"]] = {
+    lang: [_compile_token(t) for t in toks] for lang, toks in _CROSS_FILE_SOURCES.items()
+}
+_SINK_PATS: Dict[str, List["re.Pattern"]] = {
+    lang: [_compile_token(t) for t in toks] for lang, toks in _CROSS_FILE_SINKS.items()
+}
+
+
+def _matches_any(pats: List["re.Pattern"], text: str) -> bool:
+    return any(p.search(text) for p in pats)
+
+
 def _detect_lang(file_path: str) -> Optional[str]:
     ext = os.path.splitext(file_path)[1].lower()
     return {
@@ -279,14 +304,13 @@ def _extract_functions(content: str, file_path: str, lang: str) -> List[Function
         func_start = m.end()
         func_body = content[func_start:func_start + 2000]  # reasonable window
 
-        sources = _CROSS_FILE_SOURCES.get(lang, [])
-        returns_tainted = any(src in func_body for src in sources) and "return" in func_body
+        returns_tainted = _matches_any(_SOURCE_PATS.get(lang, []), func_body) and "return" in func_body
 
         # Check which params flow to sinks
-        sinks = _CROSS_FILE_SINKS.get(lang, [])
+        sink_pats = _SINK_PATS.get(lang, [])
         tainted_params = []
         for i, param in enumerate(params):
-            if param and any(f"{param}" in func_body and sink in func_body for sink in sinks):
+            if param and re.search(r"\b" + re.escape(param) + r"\b", func_body) and _matches_any(sink_pats, func_body):
                 tainted_params.append(i)
 
         functions.append(FunctionExport(
@@ -389,10 +413,11 @@ class CrossFileTaintAnalyzer:
             lines = content.splitlines()
 
             # Find taint sources in this file
+            source_pats = _SOURCE_PATS.get(lang, [])
             source_lines: List[Tuple[int, str]] = []
             for i, line in enumerate(lines, 1):
-                for src in sources:
-                    if src in line:
+                for src, pat in zip(sources, source_pats):
+                    if pat.search(line):
                         source_lines.append((i, src))
                         break
 
@@ -424,9 +449,9 @@ class CrossFileTaintAnalyzer:
                         # in this call's argument list — more precise than proximity.
                         call_args_text = call_text[call_text.find(func.name):]
                         imp_lang = _detect_lang(imp_file)
-                        imp_sinks = _CROSS_FILE_SINKS.get(imp_lang or lang, [])
+                        imp_sink_pats = _SINK_PATS.get(imp_lang or lang, [])
                         # Sink check is scoped to the called function's body only.
-                        has_sink = any(sink in func.body_snippet for sink in imp_sinks)
+                        has_sink = _matches_any(imp_sink_pats, func.body_snippet)
 
                         for src_line, src_name in source_lines:
                             tainted_var = _extract_tainted_var(
@@ -479,11 +504,11 @@ class CrossFileTaintAnalyzer:
                     if not any(e.to_file == file_path or os.path.splitext(e.to_file)[0] == base_fp for e in other_edges):
                         continue
 
-                    if func.name in other_content:
+                    if re.search(r"\b" + re.escape(func.name) + r"\s*\(", other_content):
                         other_lang = _detect_lang(other_file)
-                        other_sinks = _CROSS_FILE_SINKS.get(other_lang or lang, [])
+                        other_sink_pats = _SINK_PATS.get(other_lang or lang, [])
                         # Does the caller pass the return value to a sink?
-                        if func.returns_tainted and any(sink in other_content for sink in other_sinks):
+                        if func.returns_tainted and _matches_any(other_sink_pats, other_content):
                             findings.append(CrossFileFinding(
                                 source_file=file_path,
                                 source_line=func.line,
@@ -510,7 +535,10 @@ class CrossFileTaintAnalyzer:
         seen: Set[str] = set()
         unique: List[CrossFileFinding] = []
         for f in findings:
-            key = f"{f.source_file}:{f.source_line}:{f.sink_file}:{f.sink_function}"
+            # Key on the logical source→sink relationship (function names + files),
+            # not line numbers, so two overloads/definitions of the same function
+            # name don't surface as separate findings.
+            key = f"{f.issue_type}:{f.source_file}:{f.source_function}:{f.sink_file}:{f.sink_function}"
             if key not in seen:
                 seen.add(key)
                 unique.append(f)

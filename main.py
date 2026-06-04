@@ -62,7 +62,7 @@ import html as html_module
 
 from ast_analyzer import ASTAnalyzer, CLANG_AVAILABLE
 from static_tools  import run_all as run_static_tools, is_available
-from taint_analyzer import TaintAnalyzer
+from taint_analyzer import TaintAnalyzer, _weak_crypto_should_skip
 from deep_analyzer import DeepAnalyzer
 
 # ── v7.0 advanced analysis modules ──────────────────────────────────────────
@@ -1091,6 +1091,11 @@ def audit_python(file_path, audit_obj):
                     continue
                 line_num  = issue.get("line_number", "N/A")
                 msg       = issue.get("issue_text", "")
+                code_snip = issue.get("code", "")
+                # md5/sha1 in a non-security context (cache key, ETag, response
+                # fingerprint) is not a vulnerability — Bandit flags it blindly.
+                if vuln_type == "weak-crypto" and _weak_crypto_should_skip(code_snip):
+                    continue
                 # Honour Bandit's own severity/confidence instead of forcing the
                 # vuln-family default — this stops asserts/try-except being
                 # reported as HIGH/CRITICAL.

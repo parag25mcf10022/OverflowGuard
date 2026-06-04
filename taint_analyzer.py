@@ -124,6 +124,33 @@ def _weak_crypto_should_skip(line: str) -> bool:
     return bool(_HASH_NONSECURITY_CTX.search(line))
 
 
+# A "password"/"secret"/"token" keyword preceded by a boolean/verb prefix
+# (has_password, is_secret, accepts_password, password_field_name …) is a flag
+# or field-name check, not a hardcoded credential.
+_PW_VERB_PREFIX = re.compile(
+    r"(?i)\b(?:has|is|are|use|uses|want|wants|check|checks|accepts?|require[sd]?|"
+    r"need[sd]?|allow[sd]?|enable[sd]?|show[sd]?|find[sd]?|detect[sd]?|with|no|"
+    r"any|get|set|expect[sd]?)_(?:password|passwd|pwd|secret|token|api_?key)")
+
+
+def _hardcoded_pw_should_skip(line: str) -> bool:
+    """True when a (password|secret|token) = "..." match is a false positive.
+
+    Filters the common cases: boolean/field-name flags (has_password = …),
+    membership/equality tests rather than assignments (… in body / x == y), and
+    values that are obviously markup or code (type="password", <input …>).
+    """
+    if _PW_VERB_PREFIX.search(line):
+        return True
+    # Comparison / membership rather than a literal credential assignment.
+    if re.search(r"==|!=|\bin\b|\bnot\b", line):
+        return True
+    # The "value" is clearly HTML / a selector, not a secret.
+    if re.search(r'type\s*=\s*["\']|<\w+|/>|name\s*=\s*["\']', line):
+        return True
+    return False
+
+
 def _code_finditer(pattern, src: str, masked: str):
     """Yield matches of *pattern* in *src* whose start is real code.
 
@@ -336,6 +363,8 @@ def _analyze_c(src: str, lines: List[str], masked: str) -> List[TaintFinding]:
             ln = _lnum(src, m.start())
             if issue == "weak-crypto" and _weak_crypto_should_skip(_snippet_at(lines, ln)):
                 continue
+            if issue == "hardcoded-password" and _hardcoded_pw_should_skip(_snippet_at(lines, ln)):
+                continue
             key = (issue, ln)
             if key in seen:
                 continue
@@ -390,10 +419,14 @@ PY_SINK_RULES = [
      "path-traversal", "HIGH",
      "open() with user-influenced path — validate and sanitize with os.path.realpath()"),
 
-    # SSRF via requests with user input
-    (re.compile(r'\brequests\.(get|post|put|delete)\s*\(\s*(?!["\'](http|https))'),
+    # SSRF via requests with a *dynamically constructed* URL. Requiring an
+    # f-string / concatenation / .format() / %-format in the URL position avoids
+    # flagging requests.get(fixed_url, …) where the URL is a plain variable bound
+    # to a constant (a common false positive in maintenance scripts).
+    (re.compile(r'\brequests\.(?:get|post|put|delete|head|patch)\s*\(\s*'
+                r'(?:f["\']|[^,)]*?(?:\+|%[^=]|\.format\s*\())'),
      "ssrf", "HIGH",
-     "requests.get/post with dynamic URL — validate scheme/host against allowlist"),
+     "requests.get/post with dynamically built URL — validate scheme/host against allowlist"),
 
     # Weak hashing
     (re.compile(r'\bhashlib\.(md5|sha1)\s*\('),
@@ -442,6 +475,8 @@ def _analyze_python(src: str, lines: List[str], masked: str) -> List[TaintFindin
         for m in _code_finditer(pattern, src, masked):
             ln = _lnum(src, m.start())
             if issue == "weak-crypto" and _weak_crypto_should_skip(_snippet_at(lines, ln)):
+                continue
+            if issue == "hardcoded-password" and _hardcoded_pw_should_skip(_snippet_at(lines, ln)):
                 continue
             key = (issue, ln)
             if key in seen:
@@ -536,6 +571,8 @@ def _analyze_java(src: str, lines: List[str], masked: str) -> List[TaintFinding]
             ln = _lnum(src, m.start())
             if issue == "weak-crypto" and _weak_crypto_should_skip(_snippet_at(lines, ln)):
                 continue
+            if issue == "hardcoded-password" and _hardcoded_pw_should_skip(_snippet_at(lines, ln)):
+                continue
             key = (issue, ln)
             if key in seen:
                 continue
@@ -619,6 +656,8 @@ def _analyze_go(src: str, lines: List[str], masked: str) -> List[TaintFinding]:
             ln = _lnum(src, m.start())
             if issue == "weak-crypto" and _weak_crypto_should_skip(_snippet_at(lines, ln)):
                 continue
+            if issue == "hardcoded-password" and _hardcoded_pw_should_skip(_snippet_at(lines, ln)):
+                continue
             key = (issue, ln)
             if key in seen:
                 continue
@@ -681,6 +720,8 @@ def _analyze_rust(src: str, lines: List[str], masked: str) -> List[TaintFinding]
         for m in _code_finditer(pattern, src, masked):
             ln = _lnum(src, m.start())
             if issue == "weak-crypto" and _weak_crypto_should_skip(_snippet_at(lines, ln)):
+                continue
+            if issue == "hardcoded-password" and _hardcoded_pw_should_skip(_snippet_at(lines, ln)):
                 continue
             key = (issue, ln)
             if key in seen:
