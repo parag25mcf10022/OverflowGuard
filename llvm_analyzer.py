@@ -152,14 +152,19 @@ def _analyze_ir(ir_text: str) -> List[LLVMFinding]:
              f"array size this produces an out-of-bounds memory access at the IR level",
              "MEDIUM")
 
-    # ── 5. memcpy where length comes from a function parameter ───────────────
+    # ── 5. memcpy with a non-constant length ─────────────────────────────────
+    # This pattern fires on *every* variable-length memcpy and cannot, from the
+    # IR alone, prove the size is attacker-controlled or exceeds the
+    # destination.  It is therefore a LOW-confidence advisory ("verify this
+    # bound"), not a proven HIGH-severity overflow — emitting it as HIGH buried
+    # real findings under copies that are already correctly bounded.
     for m in _MEMCPY_PARAM.finditer(ir_text):
         param = m.group(1)
         ln    = lineno(m.start())
         _add("llvm-memcpy-param-size", ln,
-             f"llvm.memcpy length derived from SSA value '{param}' which originates "
-             f"from a function parameter — attacker-controlled size without bound check",
-             "HIGH")
+             f"llvm.memcpy length is a non-constant value ('{param}') — verify it "
+             f"cannot exceed the destination buffer size",
+             "LOW")
 
     return findings
 

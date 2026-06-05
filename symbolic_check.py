@@ -364,8 +364,12 @@ class SymbolicChecker:
         for m in self._CAST_NARROW.finditer(src):
             ln  = src[:m.start()].count("\n") + 1
             var = m.group(1)
-            interval = bounds.get(var, Interval(0))
-            if interval.can_exceed(255):
+            # Require a *proven* wide range.  A cast of an unknown value — most
+            # commonly (char)tolower(...) / (char)getchar() whose results are
+            # already small — is not evidence of truncation and was the main
+            # false positive here.
+            interval = bounds.get(var)
+            if interval is not None and interval.can_exceed(255):
                 _add("integer-truncation", ln,
                      f"Narrow cast of '{var}' which may exceed 255 — "
                      f"truncation could produce unexpected small / negative value",

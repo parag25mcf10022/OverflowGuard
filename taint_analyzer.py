@@ -151,6 +151,85 @@ def _hardcoded_pw_should_skip(line: str) -> bool:
     return False
 
 
+def _alloc_null_checked(lines: List[str], ln: int) -> bool:
+    """True when the allocation on line *ln* has its result NULL-checked in the
+    next few lines (so flagging it as an unchecked null-pointer is a FP)."""
+    if not (0 < ln <= len(lines)):
+        return False
+    m = re.search(r"\b([A-Za-z_]\w*)\s*=\s*(?:\([^)]*\)\s*)?(?:malloc|calloc|realloc)\s*\(",
+                  lines[ln - 1])
+    if not m:
+        return False
+    var = re.escape(m.group(1))
+    guard = re.compile(r"(?:!\s*" + var + r"\b)"
+                       r"|(?:\b" + var + r"\b\s*(?:==|!=)\s*NULL)"
+                       r"|(?:\bif\s*\(\s*" + var + r"\b)")
+    for j in range(ln, min(ln + 4, len(lines))):
+        if guard.search(lines[j]):
+            return True
+    return False
+
+
+def _memcpy_len_bounded(lines: List[str], ln: int) -> bool:
+    """True when the length variable of the memcpy on line *ln* is clamped or
+    bounds-checked in the preceding few lines (so it cannot exceed the dest)."""
+    if not (0 < ln <= len(lines)):
+        return False
+    mm = re.search(r'\bmemcpy\s*\([^,]+,[^,]+,\s*([A-Za-z_]\w*)\s*\)', lines[ln - 1])
+    if not mm:
+        return False
+    var = re.escape(mm.group(1))
+    ctx = "\n".join(lines[max(0, ln - 7):ln])
+    pats = (
+        r'\bif\s*\([^)]*\b' + var + r'\b[^)]*(?:<=|>=|<|>)',   # if (len < cap) / >=
+        r'\b' + var + r'\s*=\s*[^;]*\b(?:min|MIN)\s*\(',       # len = min(...)
+        r'\b' + var + r'\s*=\s*[^;]*(?:sizeof|strnlen)\b',     # len = sizeof/strnlen
+        # capacity is reserved/ensured for the length var before the copy
+        r'(?:reserve|ensure|grow|resize|alloc)\w*\s*\([^;)]*\b' + var + r'\b',
+    )
+    return any(re.search(p, ctx) for p in pats)
+
+
+def _alloc_overflow_guarded(lines: List[str], ln: int) -> bool:
+    """True when a `x * sizeof(T)` allocation on line *ln* is not realistically
+    an integer-overflow risk: either it is preceded by an explicit overflow
+    guard (SIZE_MAX / `/ sizeof`), or its size variable is a local capacity that
+    grows by doubling (`cap *= 2`, `cap = cap ? cap*2 : N`) rather than coming
+    from caller-controlled input."""
+    if not (0 < ln <= len(lines)):
+        return False
+    ctx = "\n".join(lines[max(0, ln - 9):ln])
+    if "SIZE_MAX" in ctx or re.search(r'/\s*sizeof', ctx):
+        return True
+    # Identify the multiplied size variable: `<var> * sizeof(...)`.
+    sm = re.search(r'\b([A-Za-z_]\w*)\s*\*\s*sizeof', lines[ln - 1])
+    if not sm:
+        return False
+    v = re.escape(sm.group(1))
+    return bool(re.search(r'\b' + v + r'\s*\*=\s*2\b', ctx) or
+                re.search(r'\b' + v + r'\s*=\s*[^;]*\b\w+\s*\*\s*2\b', ctx))
+
+
+def _heap_copy_exact_size(lines: List[str], ln: int) -> bool:
+    """True when an alloc on line *ln* is followed by a memcpy whose length is
+    textually identical to the allocated size (an exact-size copy → safe)."""
+    if not (0 < ln <= len(lines)):
+        return False
+    am = re.search(r"\b(?:malloc|realloc|calloc)\s*\((.*)\)", lines[ln - 1])
+    if not am:
+        return False
+    size_expr = am.group(1).split(",")[-1].strip()
+    norm = lambda s: re.sub(r"\s+", "", s)
+    want = norm(size_expr)
+    if not want:
+        return False
+    for j in range(ln - 1, min(ln + 5, len(lines))):
+        mm = re.search(r"\bmemcpy\s*\([^,]+,[^,]+,(.*)\)\s*;?\s*$", lines[j])
+        if mm and norm(mm.group(1)) == want:
+            return True
+    return False
+
+
 def _code_finditer(pattern, src: str, masked: str):
     """Yield matches of *pattern* in *src* whose start is real code.
 
@@ -364,6 +443,14 @@ def _analyze_c(src: str, lines: List[str], masked: str) -> List[TaintFinding]:
             if issue == "weak-crypto" and _weak_crypto_should_skip(_snippet_at(lines, ln)):
                 continue
             if issue == "hardcoded-password" and _hardcoded_pw_should_skip(_snippet_at(lines, ln)):
+                continue
+            if issue == "null-pointer" and _alloc_null_checked(lines, ln):
+                continue
+            if issue == "heap-buffer-overflow" and _heap_copy_exact_size(lines, ln):
+                continue
+            if issue == "buffer-overflow" and _memcpy_len_bounded(lines, ln):
+                continue
+            if issue == "integer-overflow" and _alloc_overflow_guarded(lines, ln):
                 continue
             key = (issue, ln)
             if key in seen:

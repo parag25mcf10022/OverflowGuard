@@ -420,9 +420,17 @@ class SymbolicExecutionEngine:
                     )
 
         # --- Integer overflow: arithmetic on bitvectors ---
-        m = re.search(r'(\w+)\s*[+*]\s*(\w+)', text)
-        if m and stmt.kind in ("assign", "expr"):
-            a_name, b_name = m.group(1), m.group(2)
+        m = re.search(r'(\w+)\s*([+*])\s*(\w+)', text)
+        # A result that is immediately bounded by a bit-mask or modulo
+        # (`(i + 1) & mask`, `x % n`) cannot escape its range, and a simple
+        # increment (`i + 1`) is the ubiquitous, benign loop/index pattern —
+        # neither is a meaningful integer-overflow signal.  Multiplication
+        # (allocation sizing) and non-trivial additions still are.
+        _masked = bool(re.search(r'[&%]', text))
+        _increment = bool(m) and m.group(2) == '+' and (
+            m.group(1).isdigit() or m.group(3).isdigit())
+        if m and stmt.kind in ("assign", "expr") and not _masked and not _increment:
+            a_name, b_name = m.group(1), m.group(3)
             a_expr = self._resolve_expr(a_name, state)
             b_expr = self._resolve_expr(b_name, state)
             if a_expr is not None and b_expr is not None:
@@ -471,6 +479,17 @@ class SymbolicExecutionEngine:
                         line: int, snippet: str,
                         msg_template: str) -> Optional[SymbolicFinding]:
         """Use Z3 to prove access_expr >= limit_expr."""
+        # A non-positive limit means the buffer size was never determined
+        # (e.g. a pointer member like `b->data`, recorded as size 0).  Proving
+        # `index >= 0` is vacuously true, so it is not real evidence of overflow.
+        try:
+            lim = limit_expr if isinstance(limit_expr, int) else z3.simplify(limit_expr)
+            lim_val = lim if isinstance(lim, int) else (
+                lim.as_long() if (z3.is_bv_value(lim) or z3.is_int_value(lim)) else None)
+            if lim_val is not None and lim_val <= 0:
+                return None
+        except Exception:
+            pass
         s = z3.Solver()
         s.add(z3.UGE(access_expr, limit_expr))
         if s.check() == z3.sat:

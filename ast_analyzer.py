@@ -9,6 +9,7 @@ import re
 import os
 from dataclasses import dataclass, field
 from typing import Optional, List
+from taint_analyzer import _memcpy_len_bounded
 
 # --- libclang availability ---
 try:
@@ -191,14 +192,20 @@ class ASTAnalyzer:
             # ---- Dangerous string / buffer sinks ----
             if fn in SINK_FUNCTIONS:
                 issue = SINK_FUNCTIONS[fn]
-                # Refine: if dest or a local context pointer is from heap
-                if args:
-                    dest_tok = list(args[0].get_tokens())
-                    dest_name = dest_tok[0].spelling if dest_tok else ""
-                    if dest_name in heap_vars:
-                        issue = "heap-buffer-overflow"
-                self._add(issue, ln, node.location.column,
-                          "HIGH", f"Dangerous call to {fn}()")
+                # memcpy/memmove with a length that is clamped, min()'d, or
+                # backed by a preceding reserve/ensure is bounded — not an
+                # overflow (unlike strcpy/sprintf/gets which are always risky).
+                if fn in ("memcpy", "memmove") and _memcpy_len_bounded(self._lines, ln):
+                    pass
+                else:
+                    # Refine: if dest or a local context pointer is from heap
+                    if args:
+                        dest_tok = list(args[0].get_tokens())
+                        dest_name = dest_tok[0].spelling if dest_tok else ""
+                        if dest_name in heap_vars:
+                            issue = "heap-buffer-overflow"
+                    self._add(issue, ln, node.location.column,
+                              "HIGH", f"Dangerous call to {fn}()")
 
             # ---- scanf with unbounded %s ----
             elif fn == "scanf":

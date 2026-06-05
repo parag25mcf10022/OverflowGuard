@@ -282,6 +282,49 @@ _SOURCES_BY_LANG: Dict[str, Dict[str, Tuple[ThreatLevel, str]]] = {
     "rust":   _RUST_SOURCES,
 }
 
+# Position (0-based) of the *format string* argument for each format sink, so
+# we can tell a tainted format string (a vuln) from a tainted %s value (safe).
+_FMT_ARG_POS: Dict[str, int] = {
+    "printf": 0, "vprintf": 0,
+    "fprintf": 1, "vfprintf": 1, "dprintf": 1, "syslog": 1,
+    "sprintf": 1, "vsprintf": 1,
+    "snprintf": 2, "vsnprintf": 2,
+    "fmt.Printf": 0, "fmt.Sprintf": 0, "fmt.Fprintf": 1, "fmt.Errorf": 0,
+}
+
+
+def _nth_top_arg(args_text: str, n: int) -> Optional[str]:
+    """Return the n-th top-level (comma-separated) argument, ignoring commas
+    nested inside (), [], {} or string/char literals.  None if absent."""
+    args: List[str] = []
+    depth = 0
+    cur = []
+    i = 0
+    quote = None
+    while i < len(args_text):
+        c = args_text[i]
+        if quote:
+            cur.append(c)
+            if c == "\\" and i + 1 < len(args_text):
+                cur.append(args_text[i + 1]); i += 2; continue
+            if c == quote:
+                quote = None
+        elif c in ('"', "'"):
+            quote = c; cur.append(c)
+        elif c in "([{":
+            depth += 1; cur.append(c)
+        elif c in ")]}":
+            depth -= 1; cur.append(c)
+        elif c == "," and depth == 0:
+            args.append("".join(cur)); cur = []
+        else:
+            cur.append(c)
+        i += 1
+    if cur:
+        args.append("".join(cur))
+    return args[n].strip() if 0 <= n < len(args) else None
+
+
 _SINKS_BY_LANG: Dict[str, Dict[str, Tuple[str, str]]] = {
     "c":      _C_SINKS,
     "cpp":    _C_SINKS,
@@ -557,6 +600,18 @@ class RegexTaintTracker:
                 if _looks_like_declaration(src[line_start:m.start()]):
                     continue
                 args_text = m.group(1)
+
+                # A format-string bug requires the *format* argument itself to
+                # be attacker-controlled.  When the format argument is a string
+                # literal (e.g. fprintf(stderr, "err: %s", x)), tainted data in
+                # the variadic params is just a normal %s value — not a vuln.
+                if vuln_type == "format-string":
+                    fmt_arg = _nth_top_arg(args_text, _FMT_ARG_POS.get(sink_name, 0))
+                    if fmt_arg is None:
+                        continue
+                    fa = fmt_arg.lstrip()
+                    if fa.startswith('"') or fa.startswith('L"') or fa.startswith("u8"):
+                        continue  # literal format string → safe
 
                 # Check if any argument is tainted
                 for tainted_var, source in taint_map.items():

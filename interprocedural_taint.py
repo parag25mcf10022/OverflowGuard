@@ -233,24 +233,51 @@ def _find_sink_violations(
     findings: List[InterproceduralFinding] = []
     seen: Set[Tuple[str, int]] = set()
 
+    # Format-string sinks: the *format* argument is the one that matters.
+    _FMT_POS = {"printf": 0, "fprintf": 1, "sprintf": 1}
+
+    def _arg_tainted(fi, arg_expr: str) -> bool:
+        toks = re.split(r"\W+", arg_expr.strip().lstrip("&"))
+        return any(
+            tok in fi.tainted_locals or
+            (tok in fi.params and fi.params.index(tok) in fi.tainted_params)
+            for tok in toks if tok
+        )
+
     for fi in funcs.values():
         for callee_name, call_args, call_line in fi.calls:
             if callee_name not in _DANGEROUS_SINKS:
                 continue
 
-            # Check whether any call arg is tainted
+            issue = _DANGEROUS_SINKS[callee_name]
+
+            # For format-string sinks only the format argument matters: a
+            # literal format (printf("...%s", x)) is safe even when x is
+            # tainted — x is just a %s value, not the format itself.
+            if issue == "format-string":
+                pos = _FMT_POS.get(callee_name, 0)
+                if pos >= len(call_args):
+                    continue
+                fmt = call_args[pos].strip()
+                if fmt.startswith('"') or fmt.startswith('L"') or not _arg_tainted(fi, fmt):
+                    continue
+                key = (issue, call_line)
+                if key not in seen:
+                    seen.add(key)
+                    findings.append(InterproceduralFinding(
+                        issue_type=issue, line=call_line,
+                        snippet=_snip(src_lines, call_line), confidence="HIGH",
+                        note=(f"Inter-procedural taint: '{callee_name}()' in function "
+                              f"'{fi.name}' is called with a non-literal, tainted format "
+                              f"string — format-string vulnerability")))
+                continue
+
+            # Non-format sinks: any tainted argument is a violation.
             for arg_expr in call_args:
-                arg_expr_stripped = arg_expr.strip().lstrip("&")
-                tokens = re.split(r"\W+", arg_expr_stripped)
-                tainted = any(
-                    tok in fi.tainted_locals or
-                    (tok in fi.params and fi.params.index(tok) in fi.tainted_params)
-                    for tok in tokens if tok
-                )
+                tainted = _arg_tainted(fi, arg_expr)
                 if not tainted:
                     continue
 
-                issue = _DANGEROUS_SINKS[callee_name]
                 key = (issue, call_line)
                 if key in seen:
                     continue

@@ -316,6 +316,44 @@ _COUNT_FIELD_RE = re.compile(
 _GUARD_RE_TMPL = r"if\s*\([^)]*{field}[^)]*(?:>=|>|==)[^)]*\)"
 
 
+def _for_body(src: str, for_start: int) -> str:
+    """Return the brace-delimited body of the for-loop beginning at *for_start*
+    (or a short single-statement slice if the body is not braced)."""
+    # Skip the for-header: find '(' then match to its closing ')'.
+    p = src.find("(", for_start)
+    if p < 0:
+        return src[for_start: for_start + 200]
+    depth = 0
+    i = p
+    while i < len(src):
+        if src[i] == "(":
+            depth += 1
+        elif src[i] == ")":
+            depth -= 1
+            if depth == 0:
+                i += 1
+                break
+        i += 1
+    # Skip whitespace to the body.
+    while i < len(src) and src[i].isspace():
+        i += 1
+    if i < len(src) and src[i] == "{":
+        depth = 0
+        j = i
+        while j < len(src):
+            if src[j] == "{":
+                depth += 1
+            elif src[j] == "}":
+                depth -= 1
+                if depth == 0:
+                    return src[i:j + 1]
+            j += 1
+        return src[i:]
+    # Unbraced single statement → up to the next ';'.
+    semi = src.find(";", i)
+    return src[i: semi + 1] if semi != -1 else src[i: i + 200]
+
+
 def check_uncapped_field_loop(src: str, lines: List[str]) -> List[DeepFinding]:
     """
     Detect for-loops whose iteration count comes from a struct member field
@@ -349,6 +387,34 @@ def check_uncapped_field_loop(src: str, lines: List[str]) -> List[DeepFinding]:
         has_guard = bool(guard_re.search(before_src)) or \
                     bool(cap_guard_re.search(before_src))
         if has_guard:
+            continue
+
+        # Only a real risk when the induction variable indexes a FIXED-SIZE
+        # array (`T buf[N];`).  Iterating a dynamically-grown array by its own
+        # element count (`for (i=0;i<d->count;i++) d->items[i]`, where items is
+        # a `T *` sized to hold count) is the normal, safe pattern and was the
+        # dominant false positive.
+        idx = m.group("idx")
+        body = _for_body(src, m.start())
+        # A modulo/mask on the induction variable keeps it in range (ring
+        # buffers, hash probes) — not an overflow.
+        if re.search(r"\b" + re.escape(idx) + r"\b\s*[%&]", body) or \
+           re.search(r"[%&]\s*\b" + re.escape(idx) + r"\b", body):
+            continue
+        # Only consider *bare* array accesses (`buf[i]`), not member accesses
+        # (`d->items[i]` / `obj.items[i]`).  A struct/array member is a
+        # container field, typically a pointer sized to hold `count`; the OOB
+        # risk is a fixed-size *local* array indexed by a mutable count.
+        indexed = set(re.findall(
+            r"(?<![\w.>])([A-Za-z_]\w*)\s*\[\s*" + re.escape(idx) + r"\b", body))
+        # ...and require that local to be declared with a fixed size as a local
+        # (not via `->`/`.`), to avoid matching an unrelated same-named member.
+        indexes_fixed_array = any(
+            re.search(r"(?<![\w.>])\b" + re.escape(name) +
+                      r"\s*\[\s*(?:\d+|[A-Z_][A-Z0-9_]*)\s*\]\s*;", src)
+            for name in indexed
+        )
+        if not indexes_fixed_array:
             continue
 
         key = ("uncapped-loop-bound", ln)

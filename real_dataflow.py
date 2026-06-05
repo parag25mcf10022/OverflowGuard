@@ -571,27 +571,39 @@ class RealDataflowAnalyzer:
             return findings
 
         for func in queries.find_functions(root):
-            freed: Dict[str, int] = {}  # var → first free line
-            for call in queries.find_calls(func):
-                cname = queries.call_name(call)
-                if cname in ("free", "delete"):
-                    ids = queries.get_identifiers_in(call)
-                    ids.discard(cname)
-                    for v in ids:
-                        if v in freed:
-                            snippet = ""
-                            if 0 < call.start_line <= len(source_lines):
-                                snippet = source_lines[call.start_line - 1].strip()
-                            findings.append(DataflowFinding(
-                                issue_type="double-free",
-                                line=call.start_line,
-                                snippet=snippet,
-                                note=(f"'{v}' was already freed at line {freed[v]}. "
-                                      f"double free at line {call.start_line}."),
-                                confidence="High",
-                            ))
-                        else:
-                            freed[v] = call.start_line
+            freed: Dict[str, int] = {}  # full freed lvalue → first free line
+            for node in func.walk_named():
+                # A reassignment of a freed lvalue makes a later free() of it
+                # legitimate again (realloc/reuse patterns), so clear it.
+                if node.type in ("assignment_expression", "init_declarator"):
+                    lhs = (node.child_by_field("left")
+                           or node.child_by_field("declarator")
+                           or (node.named_children[0] if node.named_children else None))
+                    if lhs is not None:
+                        freed.pop(lhs.text.strip(), None)
+                    continue
+                call_types = queries._CALL_TYPES.get(lang, set())
+                if node.type in call_types and queries.call_name(node) in ("free", "delete"):
+                    # Track the *full* freed expression (free(b->data) frees the
+                    # member, not the container `b`) so distinct lvalues are not
+                    # mistaken for a repeat free.
+                    expr = self._freed_lvalue(node)
+                    if not expr:
+                        continue
+                    if expr in freed:
+                        snippet = ""
+                        if 0 < node.start_line <= len(source_lines):
+                            snippet = source_lines[node.start_line - 1].strip()
+                        findings.append(DataflowFinding(
+                            issue_type="double-free",
+                            line=node.start_line,
+                            snippet=snippet,
+                            note=(f"'{expr}' was already freed at line {freed[expr]}. "
+                                  f"double free at line {node.start_line}."),
+                            confidence="High",
+                        ))
+                    else:
+                        freed[expr] = node.start_line
         return findings
 
     def _check_use_after_free(self, root: TSNode, queries: ASTQueries,
@@ -690,12 +702,37 @@ class RealDataflowAnalyzer:
         for func in queries.find_functions(root):
             accesses = queries.find_array_accesses(func)
             ifs = queries.find_ifs(func)
-            # Collect all identifiers used in bounds checks
+            # Collect all identifiers used in bounds checks.
             guarded_vars: Set[str] = set()
             for if_node in ifs:
                 cond = if_node.child_by_field("condition")
                 if cond:
                     guarded_vars |= queries.get_identifiers_in(cond)
+            # A loop induction variable bounded by a comparison (the `i < count`
+            # of `for (i = 0; i < count; i++)`, or any while/if relational test)
+            # is bounds-checked too — otherwise every loop-indexed access reads
+            # as an "unchecked" overflow, which is the dominant false positive.
+            _REL_OPS = {"<", "<=", ">", ">=", "==", "!="}
+            for be in func.find_all("binary_expression"):
+                op = be.child_by_field("operator")
+                if op is None:
+                    continue
+                # Relational comparison → its variables are bounds-checked.
+                if op.text in _REL_OPS:
+                    guarded_vars |= queries.get_identifiers_in(be)
+                # A bit-mask or modulo bounds the *result* of the expression, so
+                # the variable it is assigned to is range-limited too
+                # (`i = (i + 1) & mask;`, `idx = k % CAP;`).
+                elif op.text in ("&", "%"):
+                    guarded_vars |= queries.get_identifiers_in(be)
+                    # also mark the assignment target, if any
+                    anc = be
+                    for a in be.ancestors():
+                        if a.type in ("assignment_expression", "init_declarator"):
+                            lhs = a.child_by_field("left") or a.child_by_field("declarator")
+                            if lhs is not None:
+                                guarded_vars |= queries.get_identifiers_in(lhs)
+                            break
 
             for acc in accesses:
                 # Get the index variable
